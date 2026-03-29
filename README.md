@@ -27,9 +27,9 @@ cd mosaic
 docker compose up
 ```
 
-Open http://127.0.0.1:8000
+Then open http://127.0.0.1:8000
 
-Thats it!😍
+As simple as that!😍
 
 ### Alternatively:
 ### 📦 Install dependencies
@@ -44,15 +44,18 @@ uv sync
 uv run flask --app web_app run
 ```
 
-Then open http://127.0.0.1:5000 and use the upload form to generate and download your mosaic.
+Then open http://127.0.0.1:5000 
 
+Thats it!🎉
+
+### Alternatively:
 ### ⌨️ Use CLI
 
 ```
 uv run photomosaic.py <image_path> <pieces_directory>
 ```
 
-run `uv run photomosaic.py -h` for more information
+run `uv run photomosaic.py -h` for more information!
 
 
 **Example:**
@@ -61,9 +64,7 @@ run `uv run photomosaic.py -h` for more information
 uv run photomosaic.py sample.png smallPhotos
 ```
 
-### 🎉 Done!
-
-The mosaic will be generated and saved to the specified output file.
+The mosaic will be generated and saved to the specified output file 🎉
 
 ## Example output
 
