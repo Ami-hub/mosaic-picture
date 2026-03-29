@@ -42,21 +42,50 @@ def read_env_float(name: str, default: float, min_value: float = 0.0, max_value:
     return value
 
 
-BLOCK_SIZE_PX = read_env_int("MOSAIC_BLOCK_SIZE_PX", 50)
-BLOCK_MATCH_RES = read_env_int("MOSAIC_BLOCK_MATCH_RES", 20)
-ENLARGEMENT = read_env_int("MOSAIC_ENLARGEMENT", 4)
-OVERLAY_ALPHA = read_env_float("MOSAIC_OVERLAY_ALPHA", 0.5, 0.0, 1.0)
-
+BLOCK_SIZE_PX = 50
+BLOCK_MATCH_RES = 20
+ENLARGEMENT = 4
+OVERLAY_ALPHA = 0.5
 DEFAULT_OUT_FILE = getenv("MOSAIC_DEFAULT_OUT_FILE", "output.jpeg")
-
-BLOCK_SAMPLE_RATIO = BLOCK_SIZE_PX / max(min(BLOCK_MATCH_RES, BLOCK_SIZE_PX), 1)
-MATCH_BLOCK_SIZE_PX = int(BLOCK_SIZE_PX / BLOCK_SAMPLE_RATIO)
-WORKER_COUNT = read_env_int("MOSAIC_WORKER_COUNT", max(cpu_count() - 1, 1))
+BLOCK_SAMPLE_RATIO = 1.0
+MATCH_BLOCK_SIZE_PX = 20
+WORKER_COUNT = max(cpu_count() - 1, 1)
 EOQ_VALUE = None
 
 RGBImage = Image.Image
 PiecePair = Tuple[RGBImage | None, RGBImage | None]
 BlockBounds = Tuple[int, int, int, int]
+
+
+def set_runtime_config(
+    block_size_px: int | None = None,
+    block_match_res: int | None = None,
+    enlargement: int | None = None,
+    overlay_alpha: float | None = None,
+) -> None:
+    """Update runtime settings used by the mosaic pipeline."""
+    global BLOCK_SIZE_PX, BLOCK_MATCH_RES, ENLARGEMENT, OVERLAY_ALPHA
+    global BLOCK_SAMPLE_RATIO, MATCH_BLOCK_SIZE_PX
+
+    if block_size_px is not None:
+        BLOCK_SIZE_PX = max(1, int(block_size_px))
+    if block_match_res is not None:
+        BLOCK_MATCH_RES = max(1, int(block_match_res))
+    if enlargement is not None:
+        ENLARGEMENT = max(1, int(enlargement))
+    if overlay_alpha is not None:
+        OVERLAY_ALPHA = min(1.0, max(0.0, float(overlay_alpha)))
+    
+    BLOCK_SAMPLE_RATIO = BLOCK_SIZE_PX / max(min(BLOCK_MATCH_RES, BLOCK_SIZE_PX), 1)
+    MATCH_BLOCK_SIZE_PX = max(1, int(BLOCK_SIZE_PX / BLOCK_SAMPLE_RATIO))
+
+
+set_runtime_config(
+    block_size_px=read_env_int("MOSAIC_BLOCK_SIZE_PX", 50),
+    block_match_res=read_env_int("MOSAIC_BLOCK_MATCH_RES", 20),
+    enlargement=read_env_int("MOSAIC_ENLARGEMENT", 4),
+    overlay_alpha=read_env_float("MOSAIC_OVERLAY_ALPHA", 0.5, 0.0, 1.0),
+)
 
 def crop_center_square(image: RGBImage) -> RGBImage:
     """Return a centered square crop of the input image."""
@@ -213,11 +242,12 @@ def run_mosaic_builder(
     target_img_large: RGBImage,
     out_file: str,
     overlay_alpha: float,
+    worker_count: int,
     total_blocks: int = 0,
 ):
     """Build and save output image from worker results."""
     image, _, _ = build_canvas_and_grid(target_img_large.size, target_img_large.mode)
-    active_workers = WORKER_COUNT
+    active_workers = worker_count
     completed_blocks = 0
     while active_workers > 0:
         try:
@@ -259,7 +289,7 @@ def compose_mosaic_image(
         total_blocks = x_block_count * y_block_count
         builder_process = Process(
             target=run_mosaic_builder,
-            args=(result_queue, pieces_large, target_img_large, out_file, OVERLAY_ALPHA, total_blocks),
+            args=(result_queue, pieces_large, target_img_large, out_file, OVERLAY_ALPHA, WORKER_COUNT, total_blocks),
         )
         builder_process.start()
         for _ in range(WORKER_COUNT):

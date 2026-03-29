@@ -28,6 +28,14 @@ uv sync
 uv run photomosaic.py <image_path> <pieces_directory> [output_name]
 ```
 
+### 🌐 Run the web UI
+
+```
+uv run flask --app web_app run
+```
+
+Then open http://127.0.0.1:5000 and use the upload form to generate and download your mosaic.
+
 **Example:**
 
 ```

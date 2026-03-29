@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mosaic Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Sora:wght@500;700&family=IBM+Plex+Mono:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="background-noise" aria-hidden="true"></div>
+    <div class="orb orb-a" aria-hidden="true"></div>
+    <div class="orb orb-b" aria-hidden="true"></div>
+
+    <main class="layout">
+      <section class="hero reveal">
+        <p class="eyebrow">Photo Mosaic Generator</p>
+        <h1>Build striking mosaic art from your own photo library</h1>
+        <p class="lead">
+          Upload one main image and a batch of smaller images. Tune detail, texture, and blend live, then download the final
+          high-resolution result.
+        </p>
+      </section>
+
+      <section class="panel reveal delay-1">
+        <form id="mosaic-form" class="mosaic-form" novalidate>
+          <div class="field-group">
+            <label for="targetImage">Main image</label>
+            <input id="targetImage" name="targetImage" type="file" accept="image/*" required />
+          </div>
+
+          <div class="field-group">
+            <label for="pieceImages">Piece images</label>
+            <input id="pieceImages" name="pieceImages" type="file" accept="image/*" multiple required />
+            <p class="hint">For best results, add at least 30 images with mixed colors.</p>
+          </div>
+
+          <div class="controls-grid">
+            <div class="field-group compact">
+              <label for="blockSize" class="label-with-tip">
+                <span>Block size</span>
+                <span
+                  class="tip-badge"
+                  tabindex="0"
+                  role="note"
+                  aria-label="Block size help"
+                  data-tooltip="Tile pixel size in the final mosaic. Lower = finer detail but slower rendering."
+                  >?</span
+                >
+              </label>
+              <input id="blockSize" name="blockSize" type="number" min="10" max="128" value="42" />
+            </div>
+
+            <div class="field-group compact">
+              <label for="matchResolution" class="label-with-tip">
+                <span>Match resolution</span>
+                <span
+                  class="tip-badge"
+                  tabindex="0"
+                  role="note"
+                  aria-label="Match resolution help"
+                  data-tooltip="Downscaled size used to compare each tile. Higher = better matching, slower processing."
+                  >?</span
+                >
+              </label>
+              <input id="matchResolution" name="matchResolution" type="number" min="4" max="64" value="18" />
+            </div>
+
+            <div class="field-group compact">
+              <label for="enlargement" class="label-with-tip">
+                <span>Enlargement</span>
+                <span
+                  class="tip-badge"
+                  tabindex="0"
+                  role="note"
+                  aria-label="Enlargement help"
+                  data-tooltip="Upscales the source image before tiling. Higher = larger output and more tiles."
+                  >?</span
+                >
+              </label>
+              <input id="enlargement" name="enlargement" type="number" min="1" max="8" value="4" />
+            </div>
+
+            <div class="field-group compact">
+              <label for="overlayAlpha" class="label-with-tip">
+                <span>Overlay blend</span>
+                <span
+                  class="tip-badge"
+                  tabindex="0"
+                  role="note"
+                  aria-label="Overlay blend help"
+                  data-tooltip="Mix amount of the original photo over the mosaic. 0 = pure mosaic, 1 = original image."
+                  >?</span
+                >
+              </label>
+              <input id="overlayAlpha" name="overlayAlpha" type="number" min="0" max="1" step="0.01" value="0.42" />
+            </div>
+          </div>
+
+          <button id="generateButton" type="submit" class="generate-btn">Generate Mosaic</button>
+        </form>
+      </section>
+
+      <section class="result reveal delay-2">
+        <div id="status" class="status">Waiting for files...</div>
+        <a id="downloadLink" class="download-link" download="mosaic-output.jpeg" hidden>Download result</a>
+        <div id="previewWrap" class="preview-wrap" hidden>
+          <img id="previewImage" alt="Generated mosaic preview" />
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
