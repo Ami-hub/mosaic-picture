@@ -30,7 +30,7 @@ uv run photomosaic.py <image_path> <pieces_directory> [output_name]
 
 **Example:**
 
-````
+```
 uv run photomosaic.py sample.png smallPhotos
 ```
 
