@@ -9,7 +9,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 from PIL import Image
 from werkzeug.datastructures import FileStorage
 
-from photomosaic import create_mosaic_from_paths, set_runtime_config
+from photomosaic import create_mosaic_from_paths, create_mosaic_config
 
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -110,7 +110,7 @@ def generate():
             piece_name = f"piece-{index}{Path(piece_filename).suffix.lower()}"
             piece.save(pieces_path / piece_name)
 
-        set_runtime_config(
+        config = create_mosaic_config(
             block_size_px=block_size_px,
             block_match_res=block_match_res,
             enlargement=enlargement,
@@ -118,7 +118,7 @@ def generate():
         )
 
         try:
-            create_mosaic_from_paths(str(source_path), str(pieces_path), str(output_path))
+            create_mosaic_from_paths(str(source_path), str(pieces_path), str(output_path), config)
         except Exception as err:
             return jsonify({"error": f"Generation failed: {err}"}), 500
 

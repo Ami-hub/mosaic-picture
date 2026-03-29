@@ -1,91 +1,55 @@
 import argparse
-from os import getenv, walk, path
+from os import walk, path
 from sys import argv, maxsize
 from multiprocessing import Process, Queue, cpu_count
 from time import perf_counter
-from typing import Iterable, List, Sequence, Tuple
-from dotenv import load_dotenv
+from typing import Iterable, List, Sequence, Tuple, TypedDict
 from PIL import Image, ImageOps
 
-load_dotenv()
-
-
-def read_env_int(name: str, default: int, min_value: int = 1) -> int:
-    """Read an integer from environment with fallback and minimum bound."""
-    raw = getenv(name)
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        print(f"WARNING: Invalid integer for {name}: '{raw}'. Using {default}.")
-        return default
-    if value < min_value:
-        print(f"WARNING: {name} must be >= {min_value}. Using {default}.")
-        return default
-    return value
-
-
-def read_env_float(name: str, default: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
-    """Read a float from environment with fallback and inclusive bounds."""
-    raw = getenv(name)
-    if not raw:
-        return default
-    try:
-        value = float(raw)
-    except ValueError:
-        print(f"WARNING: Invalid float for {name}: '{raw}'. Using {default}.")
-        return default
-    if value < min_value or value > max_value:
-        print(f"WARNING: {name} must be between {min_value} and {max_value}. Using {default}.")
-        return default
-    return value
-
-
-BLOCK_SIZE_PX = 50
-BLOCK_MATCH_RES = 20
-ENLARGEMENT = 4
-OVERLAY_ALPHA = 0.5
-DEFAULT_OUT_FILE = getenv("MOSAIC_DEFAULT_OUT_FILE", "output.jpeg")
-BLOCK_SAMPLE_RATIO = 1.0
-MATCH_BLOCK_SIZE_PX = 20
-WORKER_COUNT = max(cpu_count() - 1, 1)
-EOQ_VALUE = None
 
 RGBImage = Image.Image
 PiecePair = Tuple[RGBImage | None, RGBImage | None]
 BlockBounds = Tuple[int, int, int, int]
+EOQ_VALUE = None
 
 
-def set_runtime_config(
-    block_size_px: int | None = None,
-    block_match_res: int | None = None,
-    enlargement: int | None = None,
-    overlay_alpha: float | None = None,
-) -> None:
-    """Update runtime settings used by the mosaic pipeline."""
-    global BLOCK_SIZE_PX, BLOCK_MATCH_RES, ENLARGEMENT, OVERLAY_ALPHA
-    global BLOCK_SAMPLE_RATIO, MATCH_BLOCK_SIZE_PX
+class MosaicConfig(TypedDict):
+    block_size_px: int
+    block_match_res: int
+    enlargement: int
+    overlay_alpha: float
+    worker_count: int
+    block_sample_ratio: float
+    match_block_size_px: int
 
-    if block_size_px is not None:
-        BLOCK_SIZE_PX = max(1, int(block_size_px))
-    if block_match_res is not None:
-        BLOCK_MATCH_RES = max(1, int(block_match_res))
-    if enlargement is not None:
-        ENLARGEMENT = max(1, int(enlargement))
-    if overlay_alpha is not None:
-        OVERLAY_ALPHA = min(1.0, max(0.0, float(overlay_alpha)))
+
+def create_mosaic_config(
+    block_size_px: int = 50,
+    block_match_res: int = 20,
+    enlargement: int = 4,
+    overlay_alpha: float = 0.5,
+    worker_count: int | None = None,
+) -> MosaicConfig:
+    """Create validated mosaic configuration dictionary."""
+    block_size_px = max(1, int(block_size_px))
+    block_match_res = max(1, int(block_match_res))
+    enlargement = max(1, int(enlargement))
+    overlay_alpha = min(1.0, max(0.0, float(overlay_alpha)))
+    if worker_count is None:
+        worker_count = max(cpu_count() - 1, 1)
     
-    BLOCK_SAMPLE_RATIO = BLOCK_SIZE_PX / max(min(BLOCK_MATCH_RES, BLOCK_SIZE_PX), 1)
-    MATCH_BLOCK_SIZE_PX = max(1, int(BLOCK_SIZE_PX / BLOCK_SAMPLE_RATIO))
-
-
-set_runtime_config(
-    block_size_px=read_env_int("MOSAIC_BLOCK_SIZE_PX", 50),
-    block_match_res=read_env_int("MOSAIC_BLOCK_MATCH_RES", 20),
-    enlargement=read_env_int("MOSAIC_ENLARGEMENT", 4),
-    overlay_alpha=read_env_float("MOSAIC_OVERLAY_ALPHA", 0.5, 0.0, 1.0),
-)
+    block_sample_ratio = block_size_px / max(min(block_match_res, block_size_px), 1)
+    match_block_size_px = max(1, int(block_size_px / block_sample_ratio))
+    
+    return {
+        "block_size_px": block_size_px,
+        "block_match_res": block_match_res,
+        "enlargement": enlargement,
+        "overlay_alpha": overlay_alpha,
+        "worker_count": worker_count,
+        "block_sample_ratio": block_sample_ratio,
+        "match_block_size_px": match_block_size_px,
+    }
 
 def crop_center_square(image: RGBImage) -> RGBImage:
     """Return a centered square crop of the input image."""
@@ -101,14 +65,14 @@ def resize_to_rgb(image: RGBImage, width: int, height: int) -> RGBImage:
     return image.resize((width, height), Image.Resampling.LANCZOS).convert("RGB")
 
 
-def prepare_piece_images(piece_path: str) -> PiecePair:
+def prepare_piece_images(piece_path: str, config: MosaicConfig) -> PiecePair:
     """Load a piece image and return large/small RGB variants for matching and output."""
     try:
         image = ImageOps.exif_transpose(Image.open(piece_path))
         image = crop_center_square(image)
         return (
-            resize_to_rgb(image, BLOCK_SIZE_PX, BLOCK_SIZE_PX),
-            resize_to_rgb(image, MATCH_BLOCK_SIZE_PX, MATCH_BLOCK_SIZE_PX),
+            resize_to_rgb(image, config["block_size_px"], config["block_size_px"]),
+            resize_to_rgb(image, config["match_block_size_px"], config["match_block_size_px"]),
         )
     except Exception:
         return (None, None)
@@ -121,32 +85,32 @@ def iterate_piece_paths(pieces_directory: str) -> Iterable[str]:
             yield path.join(root, piece_name)
 
 
-def load_piece_sets(pieces_directory: str) -> Tuple[List[RGBImage], List[RGBImage]]:
+def load_piece_sets(pieces_directory: str, config: MosaicConfig) -> Tuple[List[RGBImage], List[RGBImage]]:
     """Load all valid pieces and split them into large and small prepared variants."""
     print(f"Reading pieces from {pieces_directory}...")
-    pieces = list(map(prepare_piece_images, iterate_piece_paths(pieces_directory)))
+    pieces = list(prepare_piece_images(p, config) for p in iterate_piece_paths(pieces_directory))
     large_pieces = [t[0] for t in pieces if t[0]]
     small_pieces = [t[1] for t in pieces if t[1]]
     print(f"{len(large_pieces)} valid pieces found and processed.")
     return (large_pieces, small_pieces)
 
 
-def prepare_target_images(image_path: str) -> Tuple[RGBImage, RGBImage]:
+def prepare_target_images(image_path: str, config: MosaicConfig) -> Tuple[RGBImage, RGBImage]:
     """Load target image, enlarge/crop to block grid, and return large/small RGB versions."""
     print("Processing main image...")
     image = Image.open(image_path)
-    width = image.size[0] * ENLARGEMENT
-    height = image.size[1] * ENLARGEMENT
+    width = image.size[0] * config["enlargement"]
+    height = image.size[1] * config["enlargement"]
     large_img = image.resize((width, height), Image.Resampling.LANCZOS)
-    width_trim = (width % BLOCK_SIZE_PX) / 2
-    height_trim = (height % BLOCK_SIZE_PX) / 2
+    width_trim = (width % config["block_size_px"]) / 2
+    height_trim = (height % config["block_size_px"]) / 2
     if width_trim or height_trim:
         large_img = large_img.crop((width_trim, height_trim, width - width_trim, height - height_trim))
     large_w, large_h = large_img.size
     small_img = large_img.resize(
         (
-            int(large_w / BLOCK_SIZE_PX) * MATCH_BLOCK_SIZE_PX,
-            int(large_h / BLOCK_SIZE_PX) * MATCH_BLOCK_SIZE_PX,
+            int(large_w / config["block_size_px"]) * config["match_block_size_px"],
+            int(large_h / config["block_size_px"]) * config["match_block_size_px"],
         ),
         Image.Resampling.LANCZOS,
     )
@@ -198,11 +162,11 @@ def run_piece_match_worker(work_queue: Queue, result_queue: Queue, piece_blocks_
     result_queue.put((EOQ_VALUE, EOQ_VALUE))
 
 
-def build_canvas_and_grid(image_size: Tuple[int, int], image_mode: str) -> Tuple[RGBImage, int, int]:
+def build_canvas_and_grid(image_size: Tuple[int, int], image_mode: str, config: MosaicConfig) -> Tuple[RGBImage, int, int]:
     """Create empty output canvas and return block-grid dimensions."""
     width, height = image_size
-    x_block_count = int(width / BLOCK_SIZE_PX)
-    y_block_count = int(height / BLOCK_SIZE_PX)
+    x_block_count = int(width / config["block_size_px"])
+    y_block_count = int(height / config["block_size_px"])
     return Image.new(image_mode, (width, height)), x_block_count, y_block_count
 
 
@@ -216,21 +180,22 @@ def enqueue_piece_match_jobs(
     work_queue: Queue,
     x_block_count: int,
     y_block_count: int,
+    config: MosaicConfig,
 ) -> int:
     """Slice target image into matching blocks and enqueue worker jobs."""
     total = x_block_count * y_block_count
     for idx, (x, y) in enumerate(((x, y) for x in range(x_block_count) for y in range(y_block_count))):
         output_bounds = (
-            x * BLOCK_SIZE_PX,
-            y * BLOCK_SIZE_PX,
-            (x + 1) * BLOCK_SIZE_PX,
-            (y + 1) * BLOCK_SIZE_PX,
+            x * config["block_size_px"],
+            y * config["block_size_px"],
+            (x + 1) * config["block_size_px"],
+            (y + 1) * config["block_size_px"],
         )
         sample_bounds = (
-            x * MATCH_BLOCK_SIZE_PX,
-            y * MATCH_BLOCK_SIZE_PX,
-            (x + 1) * MATCH_BLOCK_SIZE_PX,
-            (y + 1) * MATCH_BLOCK_SIZE_PX,
+            x * config["match_block_size_px"],
+            y * config["match_block_size_px"],
+            (x + 1) * config["match_block_size_px"],
+            (y + 1) * config["match_block_size_px"],
         )
         work_queue.put((target_img_small.crop(sample_bounds).tobytes(), output_bounds))
     return total
@@ -241,13 +206,12 @@ def run_mosaic_builder(
     piece_images_large: List[RGBImage],
     target_img_large: RGBImage,
     out_file: str,
-    overlay_alpha: float,
-    worker_count: int,
+    config: MosaicConfig,
     total_blocks: int = 0,
 ):
     """Build and save output image from worker results."""
-    image, _, _ = build_canvas_and_grid(target_img_large.size, target_img_large.mode)
-    active_workers = worker_count
+    image, _, _ = build_canvas_and_grid(target_img_large.size, target_img_large.mode, config)
+    active_workers = config["worker_count"]
     completed_blocks = 0
     while active_workers > 0:
         try:
@@ -265,7 +229,7 @@ def run_mosaic_builder(
             pass
     if total_blocks > 0:
         print(f"Progress: {total_blocks}/{total_blocks} (100%)")
-    image = Image.blend(image, target_img_large, overlay_alpha)
+    image = Image.blend(image, target_img_large, config["overlay_alpha"])
     image.save(out_file)
     print(f"Output is in {out_file}")
 
@@ -273,15 +237,16 @@ def run_mosaic_builder(
 def compose_mosaic_image(
     target_images: Tuple[RGBImage, RGBImage],
     piece_images: Tuple[List[RGBImage], List[RGBImage]],
-    out_file: str = DEFAULT_OUT_FILE,
+    out_file: str,
+    config: MosaicConfig,
 ):
     """Orchestrate worker processes that match pieces and build mosaic output."""
     print("Building the mosaic...")
     target_img_large, target_img_small = target_images
     pieces_large, pieces_small = piece_images
-    _, x_block_count, y_block_count = build_canvas_and_grid(target_img_large.size, target_img_large.mode)
+    _, x_block_count, y_block_count = build_canvas_and_grid(target_img_large.size, target_img_large.mode, config)
     piece_blocks_small = [piece.tobytes() for piece in pieces_small]
-    work_queue = Queue(WORKER_COUNT)
+    work_queue = Queue(config["worker_count"])
     result_queue = Queue()
     worker_processes: List[Process] = []
     builder_process: Process | None = None
@@ -289,10 +254,10 @@ def compose_mosaic_image(
         total_blocks = x_block_count * y_block_count
         builder_process = Process(
             target=run_mosaic_builder,
-            args=(result_queue, pieces_large, target_img_large, out_file, OVERLAY_ALPHA, WORKER_COUNT, total_blocks),
+            args=(result_queue, pieces_large, target_img_large, out_file, config, total_blocks),
         )
         builder_process.start()
-        for _ in range(WORKER_COUNT):
+        for _ in range(config["worker_count"]):
             worker = Process(
                 target=run_piece_match_worker,
                 args=(work_queue, result_queue, piece_blocks_small),
@@ -305,11 +270,12 @@ def compose_mosaic_image(
             work_queue,
             x_block_count,
             y_block_count,
+            config,
         )
     except KeyboardInterrupt:
         pass
     finally:
-        for _ in range(WORKER_COUNT):
+        for _ in range(config["worker_count"]):
             work_queue.put((EOQ_VALUE, EOQ_VALUE))
         for worker in worker_processes:
             worker.join()
@@ -326,19 +292,20 @@ def abort_with_error(msg: str):
 def create_mosaic_from_paths(
     img_path: str,
     pieces_path: str,
-    out_file: str = DEFAULT_OUT_FILE,
+    out_file: str,
+    config: MosaicConfig,
 ):
     """Build a photomosaic from an input image and directory of piece images."""
     total_start = perf_counter()
     stage_start = perf_counter()
-    image_data = prepare_target_images(img_path)
+    image_data = prepare_target_images(img_path, config)
     print(f"Target image prepared in {perf_counter() - stage_start:.2f}s")
     stage_start = perf_counter()
-    pieces_data = load_piece_sets(pieces_path)
+    pieces_data = load_piece_sets(pieces_path, config)
     print(f"Piece set prepared in {perf_counter() - stage_start:.2f}s")
     if pieces_data[0]:
         stage_start = perf_counter()
-        compose_mosaic_image(image_data, pieces_data, out_file)
+        compose_mosaic_image(image_data, pieces_data, out_file, config)
         print(f"Mosaic jobs queued in {perf_counter() - stage_start:.2f}s")
         print(f"Total pipeline setup took {perf_counter() - total_start:.2f}s")
     else:
@@ -351,6 +318,24 @@ def parse_cli_args(args: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("image", nargs="?", help="Path to source image file")
     parser.add_argument("pieces_directory", nargs="?", help="Path to directory of tile images")
     parser.add_argument("output_name", nargs="?", help="Output name without extension")
+    
+    parser.add_argument(
+        "--block-size", type=int, default=50,
+        help="Tile pixel size in the final mosaic (default: 50)"
+    )
+    parser.add_argument(
+        "--match-res", type=int, default=20,
+        help="Downscaled size used to compare each tile (default: 20)"
+    )
+    parser.add_argument(
+        "--enlargement", type=int, default=4,
+        help="Upscales the source image before tiling (default: 4)"
+    )
+    parser.add_argument(
+        "--overlay-alpha", type=float, default=0.5,
+        help="Mix level of original image over mosaic, 0.0-1.0 (default: 0.5)"
+    )
+    
     return parser.parse_args(args)
 
 
@@ -367,8 +352,16 @@ def run_cli() -> None:
         abort_with_error(f"Unable to find image file '{source_image}'")
     if not path.isdir(pieces_dir):
         abort_with_error(f"Unable to find piece directory '{pieces_dir}'")
-    out_file = args.output_name + ".jpeg" if args.output_name else DEFAULT_OUT_FILE
-    create_mosaic_from_paths(source_image, pieces_dir, out_file)
+    out_file = args.output_name + ".jpeg" if args.output_name else "output.jpeg"
+    
+    config = create_mosaic_config(
+        block_size_px=args.block_size,
+        block_match_res=args.match_res,
+        enlargement=args.enlargement,
+        overlay_alpha=args.overlay_alpha,
+    )
+    
+    create_mosaic_from_paths(source_image, pieces_dir, out_file, config)
 
 
 def main() -> None:
