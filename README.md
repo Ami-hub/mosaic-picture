@@ -25,13 +25,13 @@ uv sync
 ### 👟 Run the app
 
 ```
-uv run mosaic <image_path> <pieces_directory> [output_name]
+uv run photomosaic.py <image_path> <pieces_directory> [output_name]
 ```
 
 **Example:**
 
-```
-uv run mosaic sample.png smallPhotos
+````
+uv run photomosaic.py sample.png smallPhotos
 ```
 
 ### 🎉 Done!
