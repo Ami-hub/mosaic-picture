@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mosaic"
+version = "0.1.0"
+description = "Generate a photo mosaic from an input image and a directory of piece images."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "python-dotenv>=1.0.1",
+  "Pillow>=10.0.0",
+]
+
+[project.scripts]
+mosaic = "photomosaic:main"
+
+[tool.hatch.build.targets.wheel]
+# Explicit file selection for flat-layout (no `mosaic/` package directory)
+only-include = ["photomosaic.py"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "photomosaic.py",
+  "README.md",
+  ".env.example",
+  "pyproject.toml",
+]
