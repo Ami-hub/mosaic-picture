@@ -1,44 +1,45 @@
-# Mosaic
+# Create Photo Mosaic
 
 Generate a photo mosaic from an input image and a directory of piece images.
 
-## Setup (uv)
+## 📚 Prerequisites
 
+- [Python 3.10+](https://www.python.org/downloads/)
+- [uv package manager](https://docs.astral.sh/uv/getting-started/installation/)
 
-```bash
-python -m uv sync
+## 🔥 Let's get started!
+
+### ⬇️ Clone the repo from github
+
+```
+git clone https://github.com/Ami-hub/mosaic
+cd mosaic
 ```
 
-## Configure (.env)
+### 📦 Install dependencies
 
-Copy [.env.example](.env.example) to `.env` and adjust values:
-
-```bash
-copy .env.example .env
+```
+uv sync
 ```
 
-Supported variables:
+### 👟 Run the app
 
-- `MOSAIC_BLOCK_SIZE_PX`
-- `MOSAIC_BLOCK_MATCH_RES`
-- `MOSAIC_ENLARGEMENT`
-- `MOSAIC_OVERLAY_ALPHA`
-- `MOSAIC_WORKER_COUNT`
-- `MOSAIC_DEFAULT_OUT_FILE`
-
-## Run
-
-### CLI
-
-```bash
-python -m uv run mosaic <image> <pieces_directory> [output_name_without_extension]
+```
+uv run mosaic <image_path> <pieces_directory> [output_name]
 ```
 
-Example:
+**Example:**
 
-```bash
-python -m uv run mosaic ./myphoto.jpg ./pieces mosaic_output
+```
+uv run mosaic sample.png smallPhotos
 ```
 
-This writes `mosaic_output.jpeg` (or `output.jpeg` when output name is omitted).
+### 🎉 Done!
 
+The mosaic will be generated and saved to the specified output file.
+
+## Exmple output
+
+<p align="center">
+  <img src="https://i.ibb.co/Jwd4fqH9/yes.jpg" alt="sample-api-logo" width="50%">
+</p>
