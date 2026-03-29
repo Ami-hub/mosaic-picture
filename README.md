@@ -65,11 +65,7 @@ uv run photomosaic.py sample.png smallPhotos
 
 The mosaic will be generated and saved to the specified output file.
 
-## Exmple output
-
-<p align="center">
-  <img src="https://i.ibb.co/TB2xrvNZ/outputasd.jpg" alt="sample-api-logo" width="50%">
-</p>
+## Example output
 
 <p align="center">
   <img src="https://i.ibb.co/Jwd4fqH9/yes.jpg" alt="sample-api-logo" width="50%">
