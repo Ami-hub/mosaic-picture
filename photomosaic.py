@@ -121,7 +121,7 @@ def prepare_target_images(image_path: str) -> Tuple[RGBImage, RGBImage]:
         ),
         Image.Resampling.LANCZOS,
     )
-    print("Prepared main image for mosaic creation.")
+    print("Main image prepared for mosaic creation.")
     return (large_img.convert("RGB"), small_img.convert("RGB"))
 
 
@@ -213,10 +213,12 @@ def run_mosaic_builder(
     target_img_large: RGBImage,
     out_file: str,
     overlay_alpha: float,
+    total_blocks: int = 0,
 ):
     """Build and save output image from worker results."""
     image, _, _ = build_canvas_and_grid(target_img_large.size, target_img_large.mode)
     active_workers = WORKER_COUNT
+    completed_blocks = 0
     while active_workers > 0:
         try:
             block_bounds, best_fit_piece_index = result_queue.get()
@@ -225,8 +227,14 @@ def run_mosaic_builder(
             else:
                 piece_image = piece_images_large[best_fit_piece_index]
                 paste_piece_into_canvas(image, piece_image, block_bounds)
+                completed_blocks += 1
+                if total_blocks > 0:
+                    percentage = int((completed_blocks / total_blocks) * 100)
+                    print(f"Progress: {completed_blocks}/{total_blocks} ({percentage}%)", end="\r", flush=True)
         except KeyboardInterrupt:
             pass
+    if total_blocks > 0:
+        print(f"Progress: {total_blocks}/{total_blocks} (100%)")
     image = Image.blend(image, target_img_large, overlay_alpha)
     image.save(out_file)
     print(f"Output is in {out_file}")
@@ -248,9 +256,10 @@ def compose_mosaic_image(
     worker_processes: List[Process] = []
     builder_process: Process | None = None
     try:
+        total_blocks = x_block_count * y_block_count
         builder_process = Process(
             target=run_mosaic_builder,
-            args=(result_queue, pieces_large, target_img_large, out_file, OVERLAY_ALPHA),
+            args=(result_queue, pieces_large, target_img_large, out_file, OVERLAY_ALPHA, total_blocks),
         )
         builder_process.start()
         for _ in range(WORKER_COUNT):
