@@ -31,12 +31,34 @@
         <form id="mosaic-form" class="mosaic-form" novalidate>
           <div class="field-group">
             <label for="targetImage">Main image</label>
-            <input id="targetImage" name="targetImage" type="file" accept="image/*" required />
+            <div class="upload-wrapper">
+              <input id="targetImage" name="targetImage" type="file" accept="image/*" required />
+              <label for="targetImage" class="upload-btn" aria-label="Upload main image">
+                <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                <span class="upload-text">Choose image</span>
+                <span class="upload-filename"></span>
+              </label>
+            </div>
           </div>
 
           <div class="field-group">
             <label for="pieceImages">Piece images</label>
-            <input id="pieceImages" name="pieceImages" type="file" accept="image/*" multiple required />
+            <div class="upload-wrapper">
+              <input id="pieceImages" name="pieceImages" type="file" accept="image/*" multiple required />
+              <label for="pieceImages" class="upload-btn" aria-label="Upload piece images">
+                <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                <span class="upload-text">Choose images</span>
+                <span class="upload-filename"></span>
+              </label>
+            </div>
             <p class="hint">For best results, add at least 30 images with mixed colors.</p>
           </div>
 

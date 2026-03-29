@@ -12,6 +12,32 @@ function setStatus(message, kind = "") {
   statusNode.textContent = message;
 }
 
+function updateFileDisplay(inputId) {
+  const input = document.getElementById(inputId);
+  const label = input.nextElementSibling;
+  const filenameSpan = label.querySelector(".upload-filename");
+  
+  if (input.files.length > 0) {
+    if (input.multiple) {
+      filenameSpan.textContent = `${input.files.length} files selected`;
+    } else {
+      filenameSpan.textContent = input.files[0].name;
+    }
+    label.classList.add("has-files");
+  } else {
+    filenameSpan.textContent = "";
+    label.classList.remove("has-files");
+  }
+}
+
+document.getElementById("targetImage").addEventListener("change", () => {
+  updateFileDisplay("targetImage");
+});
+
+document.getElementById("pieceImages").addEventListener("change", () => {
+  updateFileDisplay("pieceImages");
+});
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
