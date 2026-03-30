@@ -46,10 +46,7 @@ uv run flask --app web_app run
 
 Then open http://127.0.0.1:5000 
 
-Thats it!🎉
-
-### Alternatively:
-### ⌨️ Use CLI
+### ⌨️ Or use CLI mode
 
 ```
 uv run photomosaic.py <image_path> <pieces_directory>
