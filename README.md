@@ -1,6 +1,6 @@
 # Create Photo Mosaic
 
-Generate a photo mosaic from an input image and a directory of piece images.
+Generate an amazing photo mosaic from your images!
 
 ## 📚 Prerequisites
 
