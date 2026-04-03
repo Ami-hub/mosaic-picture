@@ -27,7 +27,8 @@ body {
   background: radial-gradient(circle at 8% 8%, #355070 0%, transparent 40%),
     radial-gradient(circle at 85% 20%, #3a506b 0%, transparent 35%),
     linear-gradient(120deg, var(--bg-1), var(--bg-2));
-  overflow-x: hidden;
+    background-attachment: fixed;
+    overflow-x: hidden;
 }
 
 .background-noise {
