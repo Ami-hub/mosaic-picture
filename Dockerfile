@@ -14,7 +14,7 @@ FROM python:3.13.12-slim AS runner
 WORKDIR /app
 
 COPY --from=builder /app/.venv .venv
-COPY web_app.py web_app.py
+COPY app.py app.py
 COPY photomosaic.py photomosaic.py
 COPY templates templates
 COPY static static
@@ -26,4 +26,4 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
  
 EXPOSE 8000
  
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "4", "--timeout", "300", "web_app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "4", "--timeout", "300", "app:app"]
