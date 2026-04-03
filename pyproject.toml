@@ -16,7 +16,7 @@ dependencies = [
 
 [project.scripts]
 mosaic = "photomosaic:main"
-mosaic-web = "web_app:main"
+mosaic-web = "app:main"
 
 [tool.hatch.build.targets.wheel]
 # Explicit file selection for flat-layout (no `mosaic/` package directory)

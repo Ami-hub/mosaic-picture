@@ -1,6 +1,6 @@
 # Create Photo Mosaic
 
-Generate a photo mosaic from an input image and a directory of piece images.
+Generate an amazing photo mosaic from your images!
 
 ## 📚 Prerequisites
 
@@ -41,7 +41,7 @@ uv sync
 ### 🖥️ Run the local web UI
 
 ```
-uv run flask --app web_app run
+uv run flask run
 ```
 
 Then open http://127.0.0.1:5000 
