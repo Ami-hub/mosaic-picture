@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from io import BytesIO
 from pathlib import Path
 from queue import Empty, Queue
@@ -161,6 +162,18 @@ def index():
 @app.get("/favicon.ico")
 def favicon():
     return send_file("static/favicon.ico", mimetype="image/x-icon") 
+
+
+@app.get("/api/capabilities")
+def capabilities():
+    is_vercel_serverless = os.environ.get("VERCEL") == "1"
+    supports_async_jobs = not is_vercel_serverless
+    return jsonify(
+        {
+            "supportsAsyncJobs": supports_async_jobs,
+            "supportsChunkUploadSessions": supports_async_jobs,
+        }
+    )
 
 @app.post("/api/generate")
 def generate():

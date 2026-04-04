@@ -18,6 +18,7 @@ let progressSocket = null;
 let mosaicReady = false;
 let displayedProgress = 0;
 let displayedGenerationPercent = 0;
+let serverCapabilities = null;
 
 function setProgress(percent, text) {
   const numericPercent = Number(percent);
@@ -86,16 +87,7 @@ function showGenerationError(message) {
   resetGenerationState();
 }
 
-async function showGeneratedMosaic(jobId) {
-  const downloadResponse = await fetch(`/api/generate/download/${jobId}`);
-  if (!downloadResponse.ok) {
-    const payload = await downloadResponse.json().catch(() => ({ error: "Download failed." }));
-    showGenerationError(payload.error || "Download failed.");
-    return;
-  }
-
-  const blob = await downloadResponse.blob();
-
+function showGeneratedBlob(blob) {
   if (currentObjectUrl) {
     URL.revokeObjectURL(currentObjectUrl);
   }
@@ -118,6 +110,68 @@ async function showGeneratedMosaic(jobId) {
   currentJobId = null;
   mosaicReady = true;
   generateButton.disabled = true;
+}
+
+async function showGeneratedMosaic(jobId) {
+  const downloadResponse = await fetch(`/api/generate/download/${jobId}`);
+  if (!downloadResponse.ok) {
+    const payload = await downloadResponse.json().catch(() => ({ error: "Download failed." }));
+    showGenerationError(payload.error || "Download failed.");
+    return;
+  }
+
+  const blob = await downloadResponse.blob();
+  showGeneratedBlob(blob);
+}
+
+async function getServerCapabilities() {
+  if (serverCapabilities) {
+    return serverCapabilities;
+  }
+
+  try {
+    const response = await fetch("/api/capabilities");
+    if (response.ok) {
+      serverCapabilities = await response.json();
+      return serverCapabilities;
+    }
+  } catch (error) {
+    // Fall back to async-capable defaults when capabilities are unavailable.
+  }
+
+  serverCapabilities = {
+    supportsAsyncJobs: true,
+    supportsChunkUploadSessions: true,
+  };
+  return serverCapabilities;
+}
+
+function buildGenerationFormData(targetFile, pieceFiles) {
+  const data = new FormData();
+  data.append("targetImage", targetFile);
+  pieceFiles.forEach((pieceFile) => {
+    data.append("pieceImages", pieceFile);
+  });
+  data.append("blockSize", document.getElementById("blockSize").value);
+  data.append("matchResolution", document.getElementById("matchResolution").value);
+  data.append("enlargement", document.getElementById("enlargement").value);
+  data.append("overlayAlpha", document.getElementById("overlayAlpha").value);
+  return data;
+}
+
+async function generateDirectMosaic(targetFile, pieceFiles) {
+  const data = buildGenerationFormData(targetFile, pieceFiles);
+  const response = await fetch("/api/generate", {
+    method: "POST",
+    body: data,
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ error: "Generation failed." }));
+    throw new Error(payload.error || "Generation failed.");
+  }
+
+  return response.blob();
 }
 
 async function processJobStatus(statusPayload, jobId) {
@@ -296,6 +350,15 @@ form.addEventListener("submit", async (event) => {
   try {
     const targetFile = targetInput.files[0];
     const pieceFiles = Array.from(piecesInput.files);
+    const capabilities = await getServerCapabilities();
+
+    if (!capabilities.supportsAsyncJobs || !capabilities.supportsChunkUploadSessions) {
+      setProgress(10, "Uploading images...");
+      const blob = await generateDirectMosaic(targetFile, pieceFiles);
+      setProgress(95, "Finalizing mosaic...");
+      showGeneratedBlob(blob);
+      return;
+    }
 
     progressText.textContent = "Creating upload session...";
     const uploadId = await uploadAllFilesChunked(targetFile, pieceFiles);
