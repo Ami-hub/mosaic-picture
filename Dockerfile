@@ -26,4 +26,4 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
  
 EXPOSE 8000
  
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "4", "--timeout", "300", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--threads", "2", "--timeout", "300", "app:app"]
