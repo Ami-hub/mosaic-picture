@@ -12,18 +12,18 @@ from flask import Flask, jsonify, render_template, request, send_file
 from flask_sock import Sock
 from PIL import Image
 from werkzeug.datastructures import FileStorage
-
+from pillow_heif import register_heif_opener
 from photomosaic import create_mosaic_from_paths, create_mosaic_config
-
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 sock = Sock(app)
 
-ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic", ".heif"}
 JOBS_LOCK = Lock()
 JOBS: dict[str, dict] = {}
 JOB_SUBSCRIBERS: dict[str, list[Queue]] = {}
 
+register_heif_opener()
 
 def _job_payload(job: dict) -> dict:
     return {

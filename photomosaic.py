@@ -5,6 +5,9 @@ from multiprocessing import Process, Queue, cpu_count
 from time import perf_counter
 from typing import Callable, Iterable, List, Sequence, Tuple, TypedDict
 from PIL import Image, ImageOps
+from pillow_heif import register_heif_opener
+
+register_heif_opener()
 
 
 RGBImage = Image.Image
