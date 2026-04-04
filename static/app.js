@@ -11,6 +11,7 @@ const progressText = document.getElementById("progressText");
 let currentObjectUrl = null;
 let currentJobId = null;
 let progressSocket = null;
+let mosaicReady = false;
 
 function closeProgressSocket() {
   if (!progressSocket) {
@@ -57,6 +58,11 @@ document.getElementById("pieceImages").addEventListener("change", () => {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+
+  if (mosaicReady) {
+    setStatus("Mosaic is already ready.", "success");
+    return;
+  }
 
   const targetInput = document.getElementById("targetImage");
   const piecesInput = document.getElementById("pieceImages");
@@ -159,11 +165,12 @@ form.addEventListener("submit", async (event) => {
         setTimeout(() => {
           progressContainer.hidden = true;
           statusNode.hidden = false;
-          setStatus("Mosaic ready.", "success");
+          setStatus("Mosaic ready!", "success");
         }, 600);
 
         currentJobId = null;
-        generateButton.disabled = false;
+        mosaicReady = true;
+        generateButton.disabled = true;
       } catch (messageError) {
         closeProgressSocket();
         progressContainer.hidden = true;
