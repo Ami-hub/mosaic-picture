@@ -3,13 +3,14 @@ from os import walk, path
 from sys import argv, maxsize
 from multiprocessing import Process, Queue, cpu_count
 from time import perf_counter
-from typing import Iterable, List, Sequence, Tuple, TypedDict
+from typing import Callable, Iterable, List, Sequence, Tuple, TypedDict
 from PIL import Image, ImageOps
 
 
 RGBImage = Image.Image
 PiecePair = Tuple[RGBImage | None, RGBImage | None]
 BlockBounds = Tuple[int, int, int, int]
+ProgressCallback = Callable[[str, int], None]
 EOQ_VALUE = None
 
 
@@ -85,10 +86,21 @@ def iterate_piece_paths(pieces_directory: str) -> Iterable[str]:
             yield path.join(root, piece_name)
 
 
-def load_piece_sets(pieces_directory: str, config: MosaicConfig) -> Tuple[List[RGBImage], List[RGBImage]]:
+def load_piece_sets(
+    pieces_directory: str,
+    config: MosaicConfig,
+    progress_callback: ProgressCallback | None = None,
+) -> Tuple[List[RGBImage], List[RGBImage]]:
     """Load all valid pieces and split them into large and small prepared variants."""
     print(f"Reading pieces from {pieces_directory}...")
-    pieces = list(prepare_piece_images(p, config) for p in iterate_piece_paths(pieces_directory))
+    piece_paths = list(iterate_piece_paths(pieces_directory))
+    total_piece_count = len(piece_paths)
+    pieces: list[PiecePair] = []
+    for idx, piece_path in enumerate(piece_paths, start=1):
+        pieces.append(prepare_piece_images(piece_path, config))
+        if progress_callback:
+            loading_progress = 10 + int((idx / max(total_piece_count, 1)) * 5)
+            progress_callback(f"Reading pieces ({idx}/{total_piece_count})", loading_progress)
     large_pieces = [t[0] for t in pieces if t[0]]
     small_pieces = [t[1] for t in pieces if t[1]]
     print(f"{len(large_pieces)} valid pieces found and processed.")
@@ -181,10 +193,12 @@ def enqueue_piece_match_jobs(
     x_block_count: int,
     y_block_count: int,
     config: MosaicConfig,
+    progress_callback: ProgressCallback | None = None,
 ) -> int:
     """Slice target image into matching blocks and enqueue worker jobs."""
     total = x_block_count * y_block_count
-    for idx, (x, y) in enumerate(((x, y) for x in range(x_block_count) for y in range(y_block_count))):
+    progress_step = max(total // 120, 1)
+    for idx, (x, y) in enumerate(((x, y) for x in range(x_block_count) for y in range(y_block_count)), start=1):
         output_bounds = (
             x * config["block_size_px"],
             y * config["block_size_px"],
@@ -198,6 +212,9 @@ def enqueue_piece_match_jobs(
             (y + 1) * config["match_block_size_px"],
         )
         work_queue.put((target_img_small.crop(sample_bounds).tobytes(), output_bounds))
+        if progress_callback and (idx % progress_step == 0 or idx == total):
+            queue_progress = 20 + int((idx / max(total, 1)) * 5)
+            progress_callback(f"Queueing tile jobs ({idx}/{total})", queue_progress)
     return total
 
 
@@ -208,6 +225,7 @@ def run_mosaic_builder(
     out_file: str,
     config: MosaicConfig,
     total_blocks: int = 0,
+    progress_callback: ProgressCallback | None = None,
 ):
     """Build and save output image from worker results."""
     image, _, _ = build_canvas_and_grid(target_img_large.size, target_img_large.mode, config)
@@ -223,14 +241,23 @@ def run_mosaic_builder(
                 paste_piece_into_canvas(image, piece_image, block_bounds)
                 completed_blocks += 1
                 if total_blocks > 0:
-                    percentage = int((completed_blocks / total_blocks) * 100)
+                    # Reserve early and late percentages for non-matching stages.
+                    percentage = 25 + int((completed_blocks / total_blocks) * 70)
                     print(f"Progress: {completed_blocks}/{total_blocks} ({percentage}%)", end="\r", flush=True)
+                    if progress_callback:
+                        progress_callback("Matching tiles", min(95, percentage))
         except KeyboardInterrupt:
             pass
     if total_blocks > 0:
-        print(f"Progress: {total_blocks}/{total_blocks} (100%)")
+        print(f"Progress: {total_blocks}/{total_blocks} (95%)")
+    if progress_callback:
+        progress_callback("Blending final image", 97)
     image = Image.blend(image, target_img_large, config["overlay_alpha"])
+    if progress_callback:
+        progress_callback("Saving output", 99)
     image.save(out_file)
+    if progress_callback:
+        progress_callback("Done", 100)
     print(f"Output is in {out_file}")
 
 
@@ -239,6 +266,7 @@ def compose_mosaic_image(
     piece_images: Tuple[List[RGBImage], List[RGBImage]],
     out_file: str,
     config: MosaicConfig,
+    progress_callback: ProgressCallback | None = None,
 ):
     """Orchestrate worker processes that match pieces and build mosaic output."""
     print("Building the mosaic...")
@@ -249,21 +277,24 @@ def compose_mosaic_image(
     work_queue = Queue(config["worker_count"])
     result_queue = Queue()
     worker_processes: List[Process] = []
-    builder_process: Process | None = None
     try:
+        if progress_callback:
+            progress_callback("Starting workers", 16)
         total_blocks = x_block_count * y_block_count
-        builder_process = Process(
-            target=run_mosaic_builder,
-            args=(result_queue, pieces_large, target_img_large, out_file, config, total_blocks),
-        )
-        builder_process.start()
-        for _ in range(config["worker_count"]):
+        worker_count = config["worker_count"]
+        for worker_index in range(1, worker_count + 1):
             worker = Process(
                 target=run_piece_match_worker,
                 args=(work_queue, result_queue, piece_blocks_small),
             )
             worker.start()
             worker_processes.append(worker)
+            if progress_callback:
+                startup_progress = 16 + int((worker_index / max(worker_count, 1)) * 4)
+                progress_callback(f"Starting workers ({worker_index}/{worker_count})", startup_progress)
+
+        if progress_callback:
+            progress_callback(f"Queueing tile jobs (0/{total_blocks})", 20)
 
         enqueue_piece_match_jobs(
             target_img_small,
@@ -271,16 +302,26 @@ def compose_mosaic_image(
             x_block_count,
             y_block_count,
             config,
+            progress_callback,
+        )
+
+        for _ in range(config["worker_count"]):
+            work_queue.put((EOQ_VALUE, EOQ_VALUE))
+
+        run_mosaic_builder(
+            result_queue,
+            pieces_large,
+            target_img_large,
+            out_file,
+            config,
+            total_blocks,
+            progress_callback,
         )
     except KeyboardInterrupt:
         pass
     finally:
-        for _ in range(config["worker_count"]):
-            work_queue.put((EOQ_VALUE, EOQ_VALUE))
         for worker in worker_processes:
             worker.join()
-        if builder_process:
-            builder_process.join()
 
 
 def abort_with_error(msg: str):
@@ -294,18 +335,27 @@ def create_mosaic_from_paths(
     pieces_path: str,
     out_file: str,
     config: MosaicConfig,
+    progress_callback: ProgressCallback | None = None,
 ):
     """Build a photomosaic from an input image and directory of piece images."""
     total_start = perf_counter()
     stage_start = perf_counter()
+    if progress_callback:
+        progress_callback("Preparing main image", 3)
     image_data = prepare_target_images(img_path, config)
+    if progress_callback:
+        progress_callback("Main image ready", 8)
     print(f"Target image prepared in {perf_counter() - stage_start:.2f}s")
     stage_start = perf_counter()
-    pieces_data = load_piece_sets(pieces_path, config)
+    if progress_callback:
+        progress_callback("Loading piece images", 10)
+    pieces_data = load_piece_sets(pieces_path, config, progress_callback)
+    if progress_callback:
+        progress_callback("Piece images ready", 15)
     print(f"Piece set prepared in {perf_counter() - stage_start:.2f}s")
     if pieces_data[0]:
         stage_start = perf_counter()
-        compose_mosaic_image(image_data, pieces_data, out_file, config)
+        compose_mosaic_image(image_data, pieces_data, out_file, config, progress_callback)
         print(f"Mosaic jobs queued in {perf_counter() - stage_start:.2f}s")
         print(f"Total pipeline setup took {perf_counter() - total_start:.2f}s")
     else:

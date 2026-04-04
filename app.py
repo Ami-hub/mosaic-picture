@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 from io import BytesIO
 from pathlib import Path
+from queue import Empty, Queue
 from tempfile import TemporaryDirectory
+from threading import Lock, Thread
 from uuid import uuid4
 
 from flask import Flask, jsonify, render_template, request, send_file
+from flask_sock import Sock
 from PIL import Image
 from werkzeug.datastructures import FileStorage
 
@@ -13,8 +17,90 @@ from photomosaic import create_mosaic_from_paths, create_mosaic_config
 
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
+sock = Sock(app)
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+JOBS_LOCK = Lock()
+JOBS: dict[str, dict] = {}
+JOB_SUBSCRIBERS: dict[str, list[Queue]] = {}
+
+
+def _job_payload(job: dict) -> dict:
+    return {
+        "state": job["state"],
+        "stage": job["stage"],
+        "progress": job["progress"],
+        "error": job["error"],
+        "ready": job["state"] == "done",
+    }
+
+
+def _publish_job_update(job_id: str) -> None:
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return
+        payload = _job_payload(job)
+        subscribers = list(JOB_SUBSCRIBERS.get(job_id, []))
+
+    for subscriber_queue in subscribers:
+        try:
+            subscriber_queue.put_nowait(payload)
+        except Exception:
+            pass
+
+
+def _register_job_subscriber(job_id: str) -> Queue:
+    subscriber_queue: Queue = Queue()
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            raise KeyError(job_id)
+        JOB_SUBSCRIBERS.setdefault(job_id, []).append(subscriber_queue)
+        subscriber_queue.put_nowait(_job_payload(job))
+    return subscriber_queue
+
+
+def _unregister_job_subscriber(job_id: str, subscriber_queue: Queue) -> None:
+    with JOBS_LOCK:
+        queues = JOB_SUBSCRIBERS.get(job_id)
+        if not queues:
+            return
+        if subscriber_queue in queues:
+            queues.remove(subscriber_queue)
+        if not queues:
+            JOB_SUBSCRIBERS.pop(job_id, None)
+
+
+def _set_job(job_id: str, **fields) -> None:
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return
+        job.update(fields)
+    _publish_job_update(job_id)
+
+
+def _get_job(job_id: str) -> dict | None:
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return None
+        return dict(job)
+
+
+def _create_job() -> str:
+    job_id = uuid4().hex
+    with JOBS_LOCK:
+        JOBS[job_id] = {
+            "state": "queued",
+            "stage": "Queued",
+            "progress": 0,
+            "error": None,
+            "result": None,
+        }
+        JOB_SUBSCRIBERS[job_id] = []
+    return job_id
 
 
 def _has_allowed_extension(filename: str) -> bool:
@@ -130,6 +216,157 @@ def generate():
             as_attachment=True,
             download_name="mosaic-output.jpeg",
         )
+
+
+@app.post("/api/generate/start")
+def start_generate_job():
+    target = request.files.get("targetImage")
+    pieces = request.files.getlist("pieceImages")
+
+    if target is None or target.filename == "":
+        return jsonify({"error": "Please upload a main image."}), 400
+    target_filename = target.filename
+    if target_filename is None or target_filename == "":
+        return jsonify({"error": "Please upload a main image."}), 400
+    if not _has_allowed_extension(target_filename):
+        return jsonify({"error": "Main image format is not supported."}), 400
+
+    valid_piece_files: list[tuple[FileStorage, str]] = []
+    for uploaded_piece in pieces:
+        filename = uploaded_piece.filename if uploaded_piece else None
+        if uploaded_piece and filename:
+            valid_piece_files.append((uploaded_piece, filename))
+
+    if len(valid_piece_files) < 4:
+        return jsonify({"error": "Upload at least 4 piece images."}), 400
+
+    for _, piece_filename in valid_piece_files:
+        if not _has_allowed_extension(piece_filename):
+            return jsonify({"error": f"Unsupported piece image: {piece_filename}"}), 400
+
+    try:
+        block_size_px = _parse_int("blockSize", 42, 10, 128)
+        block_match_res = _parse_int("matchResolution", 18, 4, 64)
+        enlargement = _parse_int("enlargement", 4, 1, 8)
+        overlay_alpha = _parse_float("overlayAlpha", 0.42, 0.0, 1.0)
+    except ValueError as err:
+        return jsonify({"error": str(err)}), 400
+
+    target_bytes = target.read()
+    pieces_bytes: list[tuple[str, bytes]] = []
+    for uploaded_piece, piece_filename in valid_piece_files:
+        pieces_bytes.append((piece_filename, uploaded_piece.read()))
+
+    config = create_mosaic_config(
+        block_size_px=block_size_px,
+        block_match_res=block_match_res,
+        enlargement=enlargement,
+        overlay_alpha=overlay_alpha,
+    )
+
+    job_id = _create_job()
+
+    def run_job() -> None:
+        _set_job(job_id, state="running", stage="Starting", progress=1)
+
+        def on_progress(stage: str, progress: int) -> None:
+            _set_job(job_id, state="running", stage=stage, progress=max(0, min(100, int(progress))))
+
+        try:
+            with TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                source_path = temp_path / "source" / target_filename
+                pieces_path = temp_path / "pieces"
+                output_path = temp_path / f"mosaic-{uuid4().hex}.jpeg"
+                source_path.parent.mkdir(parents=True, exist_ok=True)
+                pieces_path.mkdir(parents=True, exist_ok=True)
+
+                source_path.write_bytes(target_bytes)
+
+                try:
+                    with Image.open(source_path):
+                        pass
+                except Exception:
+                    _set_job(job_id, state="error", stage="Validation failed", error="The main image appears to be invalid.")
+                    return
+
+                for index, (piece_filename, piece_data) in enumerate(pieces_bytes, start=1):
+                    piece_name = f"piece-{index}{Path(piece_filename).suffix.lower()}"
+                    (pieces_path / piece_name).write_bytes(piece_data)
+
+                create_mosaic_from_paths(
+                    str(source_path),
+                    str(pieces_path),
+                    str(output_path),
+                    config,
+                    progress_callback=on_progress,
+                )
+
+                result_bytes = output_path.read_bytes()
+
+            _set_job(job_id, state="done", stage="Done", progress=100, result=result_bytes)
+        except Exception as err:
+            _set_job(job_id, state="error", stage="Failed", error=f"Generation failed: {err}")
+
+    Thread(target=run_job, daemon=True).start()
+    return jsonify({"jobId": job_id})
+
+
+@app.get("/api/generate/status/<job_id>")
+def generate_status(job_id: str):
+    job = _get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found."}), 404
+
+    return jsonify(_job_payload(job))
+
+
+@sock.route("/api/generate/ws/<job_id>")
+def generate_progress_ws(ws, job_id: str):
+    try:
+        subscriber_queue = _register_job_subscriber(job_id)
+    except KeyError:
+        ws.send(
+            json.dumps(
+                {
+                    "state": "error",
+                    "stage": "Not found",
+                    "progress": 0,
+                    "error": "Job not found.",
+                    "ready": False,
+                }
+            )
+        )
+        return
+
+    try:
+        while True:
+            try:
+                payload = subscriber_queue.get(timeout=25)
+            except Empty:
+                continue
+
+            ws.send(json.dumps(payload))
+            if payload["state"] in {"done", "error"}:
+                return
+    finally:
+        _unregister_job_subscriber(job_id, subscriber_queue)
+
+
+@app.get("/api/generate/download/<job_id>")
+def generate_download(job_id: str):
+    job = _get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found."}), 404
+    if job["state"] != "done" or not job["result"]:
+        return jsonify({"error": "Result is not ready yet."}), 409
+
+    return send_file(
+        BytesIO(job["result"]),
+        mimetype="image/jpeg",
+        as_attachment=True,
+        download_name="mosaic-output.jpeg",
+    )
 
 
 def main() -> None:

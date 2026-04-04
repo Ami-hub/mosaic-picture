@@ -4,8 +4,25 @@ const generateButton = document.getElementById("generateButton");
 const previewImage = document.getElementById("previewImage");
 const previewWrap = document.getElementById("previewWrap");
 const downloadLink = document.getElementById("downloadLink");
+const progressContainer = document.getElementById("progressContainer");
+const progressFill = document.getElementById("progressFill");
+const progressText = document.getElementById("progressText");
 
 let currentObjectUrl = null;
+let currentJobId = null;
+let progressSocket = null;
+
+function closeProgressSocket() {
+  if (!progressSocket) {
+    return;
+  }
+  progressSocket.onopen = null;
+  progressSocket.onmessage = null;
+  progressSocket.onerror = null;
+  progressSocket.onclose = null;
+  progressSocket.close();
+  progressSocket = null;
+}
 
 function setStatus(message, kind = "") {
   statusNode.className = `status ${kind}`.trim();
@@ -55,38 +72,122 @@ form.addEventListener("submit", async (event) => {
   }
 
   generateButton.disabled = true;
-  setStatus("Generating mosaic. This may take a minute...", "");
+  closeProgressSocket();
+  progressContainer.hidden = false;
+  progressFill.style.width = "0%";
+  progressText.textContent = "Queued (0%)";
+  statusNode.hidden = true;
+  downloadLink.hidden = true;
+  previewWrap.hidden = true;
 
   const data = new FormData(form);
 
   try {
-    const response = await fetch("/api/generate", {
+    const startResponse = await fetch("/api/generate/start", {
       method: "POST",
       body: data,
     });
 
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({ error: "Unexpected server error." }));
+    if (!startResponse.ok) {
+      progressContainer.hidden = true;
+      statusNode.hidden = false;
+      const payload = await startResponse.json().catch(() => ({ error: "Unexpected server error." }));
       setStatus(payload.error || "Generation failed.", "error");
+      generateButton.disabled = false;
       return;
     }
 
-    const blob = await response.blob();
-    if (currentObjectUrl) {
-      URL.revokeObjectURL(currentObjectUrl);
-    }
-    currentObjectUrl = URL.createObjectURL(blob);
+    const startPayload = await startResponse.json();
+    currentJobId = startPayload.jobId;
 
-    previewImage.src = currentObjectUrl;
-    previewWrap.hidden = false;
+    const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const wsUrl = `${wsProtocol}://${window.location.host}/api/generate/ws/${encodeURIComponent(currentJobId)}`;
+    progressSocket = new WebSocket(wsUrl);
 
-    downloadLink.href = currentObjectUrl;
-    downloadLink.hidden = false;
+    progressSocket.onmessage = async (event) => {
+      try {
+        const statusPayload = JSON.parse(event.data);
+        const progress = Math.max(0, Math.min(100, Number(statusPayload.progress || 0)));
+        const stage = statusPayload.stage || "Working";
 
-    setStatus("Mosaic ready.", "success");
+        progressFill.style.width = `${progress}%`;
+        progressText.textContent = `${stage} (${progress}%)`;
+
+        if (statusPayload.state === "error") {
+          closeProgressSocket();
+          progressContainer.hidden = true;
+          statusNode.hidden = false;
+          setStatus(statusPayload.error || "Generation failed.", "error");
+          currentJobId = null;
+          generateButton.disabled = false;
+          return;
+        }
+
+        if (statusPayload.state !== "done") {
+          return;
+        }
+
+        closeProgressSocket();
+
+        const downloadResponse = await fetch(`/api/generate/download/${currentJobId}`);
+        if (!downloadResponse.ok) {
+          const payload = await downloadResponse.json().catch(() => ({ error: "Download failed." }));
+          progressContainer.hidden = true;
+          statusNode.hidden = false;
+          setStatus(payload.error || "Download failed.", "error");
+          currentJobId = null;
+          generateButton.disabled = false;
+          return;
+        }
+
+        const blob = await downloadResponse.blob();
+
+        if (currentObjectUrl) {
+          URL.revokeObjectURL(currentObjectUrl);
+        }
+        currentObjectUrl = URL.createObjectURL(blob);
+
+        previewImage.src = currentObjectUrl;
+        previewWrap.hidden = false;
+
+        downloadLink.href = currentObjectUrl;
+        downloadLink.hidden = false;
+
+        progressFill.style.width = "100%";
+        progressText.textContent = "Done (100%)";
+
+        setTimeout(() => {
+          progressContainer.hidden = true;
+          statusNode.hidden = false;
+          setStatus("Mosaic ready.", "success");
+        }, 600);
+
+        currentJobId = null;
+        generateButton.disabled = false;
+      } catch (messageError) {
+        closeProgressSocket();
+        progressContainer.hidden = true;
+        statusNode.hidden = false;
+        setStatus("Could not process live status updates. Try again.", "error");
+        currentJobId = null;
+        generateButton.disabled = false;
+      }
+    };
+
+    progressSocket.onerror = () => {
+      closeProgressSocket();
+      progressContainer.hidden = true;
+      statusNode.hidden = false;
+      setStatus("Live connection failed. Try again.", "error");
+      currentJobId = null;
+      generateButton.disabled = false;
+    };
   } catch (error) {
+    closeProgressSocket();
+    progressContainer.hidden = true;
+    statusNode.hidden = false;
     setStatus("Could not reach the server. Try again.", "error");
-  } finally {
+    currentJobId = null;
     generateButton.disabled = false;
   }
 });
