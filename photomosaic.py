@@ -1,6 +1,6 @@
 import argparse
 from os import walk, path
-from sys import argv, maxsize
+from sys import argv, maxsize, stdout
 from multiprocessing import Process, Queue, cpu_count
 from time import perf_counter
 from typing import Callable, Iterable, List, Sequence, Tuple, TypedDict
@@ -232,6 +232,8 @@ def run_mosaic_builder(
 ):
     """Build and save output image from worker results."""
     image, _, _ = build_canvas_and_grid(target_img_large.size, target_img_large.mode, config)
+    # Console progress is only useful for direct CLI runs.
+    show_console_progress = stdout.isatty() and progress_callback is None
     active_workers = config["worker_count"]
     completed_blocks = 0
     while active_workers > 0:
@@ -246,13 +248,15 @@ def run_mosaic_builder(
                 if total_blocks > 0:
                     # Reserve early and late percentages for non-matching stages.
                     percentage = 25 + int((completed_blocks / total_blocks) * 70)
-                    print(f"Progress: {completed_blocks}/{total_blocks} ({percentage}%)", end="\r", flush=True)
+                    if show_console_progress:
+                        print(f"Progress: {completed_blocks}/{total_blocks} ({percentage}%)", end="\r", flush=True)
                     if progress_callback:
                         progress_callback("Matching tiles", min(95, percentage))
         except KeyboardInterrupt:
             pass
     if total_blocks > 0:
-        print(f"Progress: {total_blocks}/{total_blocks} (95%)")
+        if show_console_progress:
+            print(f"Progress: {total_blocks}/{total_blocks} (95%)")
     if progress_callback:
         progress_callback("Blending final image", 97)
     image = Image.blend(image, target_img_large, config["overlay_alpha"])
