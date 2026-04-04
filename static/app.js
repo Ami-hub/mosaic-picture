@@ -14,6 +14,16 @@ let currentObjectUrl = null;
 let currentJobId = null;
 let progressSocket = null;
 let mosaicReady = false;
+let displayedProgress = 0;
+
+function setProgress(percent, text) {
+  const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+  displayedProgress = Math.max(displayedProgress, clamped);
+  progressFill.style.width = `${displayedProgress}%`;
+  if (text) {
+    progressText.textContent = text;
+  }
+}
 
 function closeProgressSocket() {
   if (!progressSocket) {
@@ -108,8 +118,7 @@ async function uploadAllFilesChunked(targetFile, pieceFiles) {
     uploadedBytes += chunkSize;
     const ratio = totalBytes > 0 ? uploadedBytes / totalBytes : 1;
     const percent = Math.max(0, Math.min(100, Math.round(ratio * 100)));
-    progressFill.style.width = `${Math.round(percent * 0.2)}%`;
-    progressText.textContent = `Uploading files (${percent}%)`;
+    setProgress(Math.round(percent * 0.2), `Uploading files (${percent}%)`);
   };
 
   await uploadFileInChunks(uploadId, targetFile, "target", 0, handleProgress);
@@ -174,8 +183,8 @@ form.addEventListener("submit", async (event) => {
   generateButton.disabled = true;
   closeProgressSocket();
   progressContainer.hidden = false;
-  progressFill.style.width = "0%";
-  progressText.textContent = "Preparing upload...";
+  displayedProgress = 0;
+  setProgress(0, "Preparing upload...");
   statusNode.hidden = true;
   downloadLink.hidden = true;
   previewWrap.hidden = true;
@@ -187,7 +196,7 @@ form.addEventListener("submit", async (event) => {
     progressText.textContent = "Creating upload session...";
     const uploadId = await uploadAllFilesChunked(targetFile, pieceFiles);
 
-    progressText.textContent = "Starting generation...";
+    setProgress(20, "Starting generation...");
     const startPayload = await startChunkedGeneration(uploadId);
     currentJobId = startPayload.jobId;
 
@@ -200,9 +209,9 @@ form.addEventListener("submit", async (event) => {
         const statusPayload = JSON.parse(event.data);
         const progress = Math.max(0, Math.min(100, toSafeNumber(statusPayload.progress, 0)));
         const stage = statusPayload.stage || "Working";
+        const visualProgress = 20 + Math.round(progress * 0.8);
 
-        progressFill.style.width = `${progress}%`;
-        progressText.textContent = `${stage} (${progress}%)`;
+        setProgress(visualProgress, `${stage} (${progress}%)`);
 
         if (statusPayload.state === "error") {
           closeProgressSocket();
@@ -244,8 +253,7 @@ form.addEventListener("submit", async (event) => {
         downloadLink.href = currentObjectUrl;
         downloadLink.hidden = false;
 
-        progressFill.style.width = "100%";
-        progressText.textContent = "Done (100%)";
+        setProgress(100, "Done (100%)");
 
         setTimeout(() => {
           progressContainer.hidden = true;
