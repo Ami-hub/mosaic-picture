@@ -9,6 +9,8 @@ const progressFill = document.getElementById("progressFill");
 const progressText = document.getElementById("progressText");
 
 const CHUNK_SIZE_BYTES = 512 * 1024;
+const STATUS_POLL_INTERVAL_MS = 1200;
+const STATUS_POLL_TIMEOUT_MS = 4 * 60 * 1000;
 
 let currentObjectUrl = null;
 let currentJobId = null;
@@ -66,6 +68,102 @@ function toSafeNumber(value, fallback = 0) {
     return parsed;
   }
   return fallback;
+}
+
+function resetGenerationState() {
+  currentJobId = null;
+  generateButton.disabled = false;
+}
+
+function showGenerationError(message) {
+  progressContainer.hidden = true;
+  statusNode.hidden = false;
+  setStatus(message, "error");
+  resetGenerationState();
+}
+
+async function showGeneratedMosaic(jobId) {
+  const downloadResponse = await fetch(`/api/generate/download/${jobId}`);
+  if (!downloadResponse.ok) {
+    const payload = await downloadResponse.json().catch(() => ({ error: "Download failed." }));
+    showGenerationError(payload.error || "Download failed.");
+    return;
+  }
+
+  const blob = await downloadResponse.blob();
+
+  if (currentObjectUrl) {
+    URL.revokeObjectURL(currentObjectUrl);
+  }
+  currentObjectUrl = URL.createObjectURL(blob);
+
+  previewImage.src = currentObjectUrl;
+  previewWrap.hidden = false;
+
+  downloadLink.href = currentObjectUrl;
+  downloadLink.hidden = false;
+
+  setProgress(100, "Done (100%)");
+
+  setTimeout(() => {
+    progressContainer.hidden = true;
+    statusNode.hidden = false;
+    setStatus("Mosaic ready!", "success");
+  }, 600);
+
+  currentJobId = null;
+  mosaicReady = true;
+  generateButton.disabled = true;
+}
+
+async function processJobStatus(statusPayload, jobId) {
+  const progress = Math.max(0, Math.min(100, toSafeNumber(statusPayload.progress, 0)));
+  const stage = statusPayload.stage || "Working";
+  const visualProgress = 20 + Math.round(progress * 0.8);
+
+  setProgress(visualProgress, `${stage} (${progress}%)`);
+
+  if (statusPayload.state === "error") {
+    showGenerationError(statusPayload.error || "Generation failed.");
+    return true;
+  }
+
+  if (statusPayload.state !== "done") {
+    return false;
+  }
+
+  await showGeneratedMosaic(jobId);
+  return true;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function pollJobStatus(jobId) {
+  const startedAt = Date.now();
+
+  while (currentJobId === jobId) {
+    if (Date.now() - startedAt > STATUS_POLL_TIMEOUT_MS) {
+      throw new Error("Status polling timed out.");
+    }
+
+    const response = await fetch(`/api/generate/status/${jobId}`);
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({ error: "Status check failed." }));
+      throw new Error(payload.error || "Status check failed.");
+    }
+
+    const statusPayload = await response.json();
+    const finished = await processJobStatus(statusPayload, jobId);
+    if (finished) {
+      return;
+    }
+
+    await wait(STATUS_POLL_INTERVAL_MS);
+  }
 }
 
 async function createUploadSession() {
@@ -200,94 +298,67 @@ form.addEventListener("submit", async (event) => {
     const startPayload = await startChunkedGeneration(uploadId);
     currentJobId = startPayload.jobId;
 
+    const fallbackToPolling = async () => {
+      if (!currentJobId) {
+        return;
+      }
+      closeProgressSocket();
+      setProgress(displayedProgress, "Live updates unavailable. Switching to polling...");
+
+      try {
+        await pollJobStatus(currentJobId);
+      } catch (pollError) {
+        showGenerationError("Could not track generation status. Try again.");
+      }
+    };
+
     const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
     const wsUrl = `${wsProtocol}://${window.location.host}/api/generate/ws/${encodeURIComponent(currentJobId)}`;
-    progressSocket = new WebSocket(wsUrl);
+    let wsOpened = false;
+    let pollingStarted = false;
+
+    const startPollingOnce = async () => {
+      if (pollingStarted) {
+        return;
+      }
+      pollingStarted = true;
+      await fallbackToPolling();
+    };
+
+    try {
+      progressSocket = new WebSocket(wsUrl);
+    } catch (wsConstructionError) {
+      await startPollingOnce();
+      return;
+    }
+
+    progressSocket.onopen = () => {
+      wsOpened = true;
+    };
 
     progressSocket.onmessage = async (event) => {
       try {
         const statusPayload = JSON.parse(event.data);
-        const progress = Math.max(0, Math.min(100, toSafeNumber(statusPayload.progress, 0)));
-        const stage = statusPayload.stage || "Working";
-        const visualProgress = 20 + Math.round(progress * 0.8);
-
-        setProgress(visualProgress, `${stage} (${progress}%)`);
-
-        if (statusPayload.state === "error") {
+        const finished = await processJobStatus(statusPayload, currentJobId);
+        if (finished) {
           closeProgressSocket();
-          progressContainer.hidden = true;
-          statusNode.hidden = false;
-          setStatus(statusPayload.error || "Generation failed.", "error");
-          currentJobId = null;
-          generateButton.disabled = false;
-          return;
         }
-
-        if (statusPayload.state !== "done") {
-          return;
-        }
-
-        closeProgressSocket();
-
-        const downloadResponse = await fetch(`/api/generate/download/${currentJobId}`);
-        if (!downloadResponse.ok) {
-          const payload = await downloadResponse.json().catch(() => ({ error: "Download failed." }));
-          progressContainer.hidden = true;
-          statusNode.hidden = false;
-          setStatus(payload.error || "Download failed.", "error");
-          currentJobId = null;
-          generateButton.disabled = false;
-          return;
-        }
-
-        const blob = await downloadResponse.blob();
-
-        if (currentObjectUrl) {
-          URL.revokeObjectURL(currentObjectUrl);
-        }
-        currentObjectUrl = URL.createObjectURL(blob);
-
-        previewImage.src = currentObjectUrl;
-        previewWrap.hidden = false;
-
-        downloadLink.href = currentObjectUrl;
-        downloadLink.hidden = false;
-
-        setProgress(100, "Done (100%)");
-
-        setTimeout(() => {
-          progressContainer.hidden = true;
-          statusNode.hidden = false;
-          setStatus("Mosaic ready!", "success");
-        }, 600);
-
-        currentJobId = null;
-        mosaicReady = true;
-        generateButton.disabled = true;
       } catch (messageError) {
-        closeProgressSocket();
-        progressContainer.hidden = true;
-        statusNode.hidden = false;
-        setStatus("Could not process live status updates. Try again.", "error");
-        currentJobId = null;
-        generateButton.disabled = false;
+        await startPollingOnce();
       }
     };
 
-    progressSocket.onerror = () => {
-      closeProgressSocket();
-      progressContainer.hidden = true;
-      statusNode.hidden = false;
-      setStatus("Live connection failed. Try again.", "error");
-      currentJobId = null;
-      generateButton.disabled = false;
+    progressSocket.onerror = async () => {
+      await startPollingOnce();
+    };
+
+    progressSocket.onclose = async () => {
+      if (!wsOpened && currentJobId) {
+        await startPollingOnce();
+      }
     };
   } catch (error) {
     closeProgressSocket();
-    progressContainer.hidden = true;
-    statusNode.hidden = false;
-    setStatus("Could not reach the server. Try again.", "error");
-    currentJobId = null;
-    generateButton.disabled = false;
+    showGenerationError("Could not reach the server. Try again.");
   }
 });
