@@ -22,6 +22,8 @@ ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic", ".heif"
 JOBS_LOCK = Lock()
 JOBS: dict[str, dict] = {}
 JOB_SUBSCRIBERS: dict[str, list[Queue]] = {}
+UPLOAD_SESSIONS_LOCK = Lock()
+UPLOAD_SESSIONS: dict[str, dict] = {}
 
 register_heif_opener()
 
@@ -101,6 +103,24 @@ def _create_job() -> str:
         }
         JOB_SUBSCRIBERS[job_id] = []
     return job_id
+
+
+def _create_upload_session() -> str:
+    upload_id = uuid4().hex
+    with UPLOAD_SESSIONS_LOCK:
+        UPLOAD_SESSIONS[upload_id] = {
+            "target": None,
+            "pieces": {},
+        }
+    return upload_id
+
+
+def _assemble_chunked_file(file_record: dict) -> bytes:
+    total_chunks = file_record["total_chunks"]
+    chunks: dict[int, bytes] = file_record["chunks"]
+    if file_record["received_chunks"] != total_chunks:
+        raise ValueError(f"File '{file_record['filename']}' is incomplete.")
+    return b"".join(chunks[idx] for idx in range(total_chunks))
 
 
 def _has_allowed_extension(filename: str) -> bool:
@@ -256,6 +276,191 @@ def start_generate_job():
     pieces_bytes: list[tuple[str, bytes]] = []
     for uploaded_piece, piece_filename in valid_piece_files:
         pieces_bytes.append((piece_filename, uploaded_piece.read()))
+
+    config = create_mosaic_config(
+        block_size_px=block_size_px,
+        block_match_res=block_match_res,
+        enlargement=enlargement,
+        overlay_alpha=overlay_alpha,
+    )
+
+    job_id = _create_job()
+
+    def run_job() -> None:
+        _set_job(job_id, state="running", stage="Starting", progress=1)
+
+        def on_progress(stage: str, progress: int) -> None:
+            _set_job(job_id, state="running", stage=stage, progress=max(0, min(100, int(progress))))
+
+        try:
+            with TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                source_path = temp_path / "source" / target_filename
+                pieces_path = temp_path / "pieces"
+                output_path = temp_path / f"mosaic-{uuid4().hex}.jpeg"
+                source_path.parent.mkdir(parents=True, exist_ok=True)
+                pieces_path.mkdir(parents=True, exist_ok=True)
+
+                source_path.write_bytes(target_bytes)
+
+                try:
+                    with Image.open(source_path):
+                        pass
+                except Exception:
+                    _set_job(job_id, state="error", stage="Validation failed", error="The main image appears to be invalid.")
+                    return
+
+                for index, (piece_filename, piece_data) in enumerate(pieces_bytes, start=1):
+                    piece_name = f"piece-{index}{Path(piece_filename).suffix.lower()}"
+                    (pieces_path / piece_name).write_bytes(piece_data)
+
+                create_mosaic_from_paths(
+                    str(source_path),
+                    str(pieces_path),
+                    str(output_path),
+                    config,
+                    progress_callback=on_progress,
+                )
+
+                result_bytes = output_path.read_bytes()
+
+            _set_job(job_id, state="done", stage="Done", progress=100, result=result_bytes)
+        except Exception as err:
+            _set_job(job_id, state="error", stage="Failed", error=f"Generation failed: {err}")
+
+    Thread(target=run_job, daemon=True).start()
+    return jsonify({"jobId": job_id})
+
+
+@app.post("/api/upload/session")
+def create_upload_session():
+    upload_id = _create_upload_session()
+    return jsonify({"uploadId": upload_id})
+
+
+@app.post("/api/upload/chunk")
+def upload_chunk():
+    upload_id = request.form.get("uploadId", "")
+    file_role = request.form.get("fileRole", "")
+    file_name = request.form.get("fileName", "")
+    raw_chunk_index = request.form.get("chunkIndex", "")
+    raw_total_chunks = request.form.get("totalChunks", "")
+    raw_file_index = request.form.get("fileIndex", "")
+    chunk_file = request.files.get("chunk")
+
+    if not upload_id:
+        return jsonify({"error": "uploadId is required."}), 400
+    if file_role not in {"target", "piece"}:
+        return jsonify({"error": "fileRole must be 'target' or 'piece'."}), 400
+    if not file_name:
+        return jsonify({"error": "fileName is required."}), 400
+    if not _has_allowed_extension(file_name):
+        return jsonify({"error": f"Unsupported image format: {file_name}"}), 400
+    if chunk_file is None:
+        return jsonify({"error": "chunk file is required."}), 400
+
+    try:
+        chunk_index = int(raw_chunk_index)
+        total_chunks = int(raw_total_chunks)
+    except ValueError:
+        return jsonify({"error": "chunkIndex and totalChunks must be integers."}), 400
+
+    if total_chunks <= 0:
+        return jsonify({"error": "totalChunks must be greater than 0."}), 400
+    if chunk_index < 0 or chunk_index >= total_chunks:
+        return jsonify({"error": "chunkIndex is out of range."}), 400
+
+    file_index = None
+    if file_role == "piece":
+        try:
+            file_index = int(raw_file_index)
+        except ValueError:
+            return jsonify({"error": "fileIndex is required for piece uploads."}), 400
+        if file_index < 0:
+            return jsonify({"error": "fileIndex must be non-negative."}), 400
+
+    chunk_bytes = chunk_file.read()
+
+    with UPLOAD_SESSIONS_LOCK:
+        session = UPLOAD_SESSIONS.get(upload_id)
+        if not session:
+            return jsonify({"error": "Upload session not found."}), 404
+
+        if file_role == "target":
+            file_record = session.get("target")
+            if file_record is None:
+                file_record = {
+                    "filename": file_name,
+                    "total_chunks": total_chunks,
+                    "chunks": {},
+                    "received_chunks": 0,
+                }
+                session["target"] = file_record
+        else:
+            pieces: dict[int, dict] = session["pieces"]
+            file_record = pieces.get(file_index)
+            if file_record is None:
+                file_record = {
+                    "filename": file_name,
+                    "total_chunks": total_chunks,
+                    "chunks": {},
+                    "received_chunks": 0,
+                }
+                pieces[file_index] = file_record
+
+        if file_record["filename"] != file_name:
+            return jsonify({"error": "fileName mismatch for this upload target."}), 400
+        if file_record["total_chunks"] != total_chunks:
+            return jsonify({"error": "totalChunks mismatch for this upload target."}), 400
+
+        chunks: dict[int, bytes] = file_record["chunks"]
+        if chunk_index not in chunks:
+            chunks[chunk_index] = chunk_bytes
+            file_record["received_chunks"] += 1
+
+        return jsonify({
+            "receivedChunks": file_record["received_chunks"],
+            "totalChunks": file_record["total_chunks"],
+        })
+
+
+@app.post("/api/generate/start-chunked")
+def start_generate_job_chunked():
+    upload_id = request.form.get("uploadId", "")
+    if not upload_id:
+        return jsonify({"error": "uploadId is required."}), 400
+
+    try:
+        block_size_px = _parse_int("blockSize", 42, 10, 128)
+        block_match_res = _parse_int("matchResolution", 18, 4, 64)
+        enlargement = _parse_int("enlargement", 4, 1, 8)
+        overlay_alpha = _parse_float("overlayAlpha", 0.42, 0.0, 1.0)
+    except ValueError as err:
+        return jsonify({"error": str(err)}), 400
+
+    with UPLOAD_SESSIONS_LOCK:
+        session = UPLOAD_SESSIONS.pop(upload_id, None)
+
+    if not session:
+        return jsonify({"error": "Upload session not found."}), 404
+
+    target_record = session.get("target")
+    if not target_record:
+        return jsonify({"error": "Please upload a main image."}), 400
+
+    pieces_by_index: dict[int, dict] = session.get("pieces", {})
+    if len(pieces_by_index) < 4:
+        return jsonify({"error": "Upload at least 4 piece images."}), 400
+
+    try:
+        target_filename = target_record["filename"]
+        target_bytes = _assemble_chunked_file(target_record)
+        pieces_bytes = [
+            (record["filename"], _assemble_chunked_file(record))
+            for _, record in sorted(pieces_by_index.items(), key=lambda item: item[0])
+        ]
+    except ValueError as err:
+        return jsonify({"error": str(err)}), 400
 
     config = create_mosaic_config(
         block_size_px=block_size_px,

@@ -8,6 +8,8 @@ const progressContainer = document.getElementById("progressContainer");
 const progressFill = document.getElementById("progressFill");
 const progressText = document.getElementById("progressText");
 
+const CHUNK_SIZE_BYTES = 512 * 1024;
+
 let currentObjectUrl = null;
 let currentJobId = null;
 let progressSocket = null;
@@ -48,6 +50,98 @@ function updateFileDisplay(inputId) {
   }
 }
 
+function toSafeNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  if (Number.isFinite(parsed)) {
+    return parsed;
+  }
+  return fallback;
+}
+
+async function createUploadSession() {
+  const response = await fetch("/api/upload/session", { method: "POST" });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ error: "Failed to create upload session." }));
+    throw new Error(payload.error || "Failed to create upload session.");
+  }
+  const payload = await response.json();
+  return payload.uploadId;
+}
+
+async function uploadFileInChunks(uploadId, file, fileRole, fileIndex, onChunkUploaded) {
+  const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE_BYTES));
+
+  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+    const start = chunkIndex * CHUNK_SIZE_BYTES;
+    const end = Math.min(start + CHUNK_SIZE_BYTES, file.size);
+    const chunkBlob = file.slice(start, end);
+
+    const data = new FormData();
+    data.append("uploadId", uploadId);
+    data.append("fileRole", fileRole);
+    data.append("fileName", file.name);
+    data.append("fileIndex", String(fileIndex));
+    data.append("chunkIndex", String(chunkIndex));
+    data.append("totalChunks", String(totalChunks));
+    data.append("chunk", chunkBlob, `${file.name}.part`);
+
+    const response = await fetch("/api/upload/chunk", {
+      method: "POST",
+      body: data,
+    });
+
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({ error: `Failed uploading ${file.name}.` }));
+      throw new Error(payload.error || `Failed uploading ${file.name}.`);
+    }
+
+    onChunkUploaded(chunkBlob.size);
+  }
+}
+
+async function uploadAllFilesChunked(targetFile, pieceFiles) {
+  const uploadId = await createUploadSession();
+  const totalBytes = targetFile.size + pieceFiles.reduce((sum, file) => sum + file.size, 0);
+  let uploadedBytes = 0;
+
+  const handleProgress = (chunkSize) => {
+    uploadedBytes += chunkSize;
+    const ratio = totalBytes > 0 ? uploadedBytes / totalBytes : 1;
+    const percent = Math.max(0, Math.min(100, Math.round(ratio * 100)));
+    progressFill.style.width = `${Math.round(percent * 0.2)}%`;
+    progressText.textContent = `Uploading files (${percent}%)`;
+  };
+
+  await uploadFileInChunks(uploadId, targetFile, "target", 0, handleProgress);
+
+  for (let index = 0; index < pieceFiles.length; index += 1) {
+    await uploadFileInChunks(uploadId, pieceFiles[index], "piece", index, handleProgress);
+  }
+
+  return uploadId;
+}
+
+async function startChunkedGeneration(uploadId) {
+  const data = new FormData();
+  data.append("uploadId", uploadId);
+  data.append("blockSize", document.getElementById("blockSize").value);
+  data.append("matchResolution", document.getElementById("matchResolution").value);
+  data.append("enlargement", document.getElementById("enlargement").value);
+  data.append("overlayAlpha", document.getElementById("overlayAlpha").value);
+
+  const response = await fetch("/api/generate/start-chunked", {
+    method: "POST",
+    body: data,
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ error: "Generation failed." }));
+    throw new Error(payload.error || "Generation failed.");
+  }
+
+  return response.json();
+}
+
 document.getElementById("targetImage").addEventListener("change", () => {
   updateFileDisplay("targetImage");
 });
@@ -81,29 +175,20 @@ form.addEventListener("submit", async (event) => {
   closeProgressSocket();
   progressContainer.hidden = false;
   progressFill.style.width = "0%";
-  progressText.textContent = "Queued (0%)";
+  progressText.textContent = "Preparing upload...";
   statusNode.hidden = true;
   downloadLink.hidden = true;
   previewWrap.hidden = true;
 
-  const data = new FormData(form);
-
   try {
-    const startResponse = await fetch("/api/generate/start", {
-      method: "POST",
-      body: data,
-    });
+    const targetFile = targetInput.files[0];
+    const pieceFiles = Array.from(piecesInput.files);
 
-    if (!startResponse.ok) {
-      progressContainer.hidden = true;
-      statusNode.hidden = false;
-      const payload = await startResponse.json().catch(() => ({ error: "Unexpected server error." }));
-      setStatus(payload.error || "Generation failed.", "error");
-      generateButton.disabled = false;
-      return;
-    }
+    progressText.textContent = "Creating upload session...";
+    const uploadId = await uploadAllFilesChunked(targetFile, pieceFiles);
 
-    const startPayload = await startResponse.json();
+    progressText.textContent = "Starting generation...";
+    const startPayload = await startChunkedGeneration(uploadId);
     currentJobId = startPayload.jobId;
 
     const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -113,7 +198,7 @@ form.addEventListener("submit", async (event) => {
     progressSocket.onmessage = async (event) => {
       try {
         const statusPayload = JSON.parse(event.data);
-        const progress = Math.max(0, Math.min(100, Number(statusPayload.progress || 0)));
+        const progress = Math.max(0, Math.min(100, toSafeNumber(statusPayload.progress, 0)));
         const stage = statusPayload.stage || "Working";
 
         progressFill.style.width = `${progress}%`;
