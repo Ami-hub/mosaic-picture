@@ -370,7 +370,7 @@ def upload_chunk():
     if chunk_index < 0 or chunk_index >= total_chunks:
         return jsonify({"error": "chunkIndex is out of range."}), 400
 
-    file_index = None
+    file_index: int | None = None
     if file_role == "piece":
         try:
             file_index = int(raw_file_index)
@@ -398,7 +398,11 @@ def upload_chunk():
                 session["target"] = file_record
         else:
             pieces: dict[int, dict] = session["pieces"]
-            file_record = pieces.get(file_index)
+            piece_index = file_index
+            if piece_index is None:
+                return jsonify({"error": "fileIndex is required for piece uploads."}), 400
+
+            file_record = pieces.get(piece_index)
             if file_record is None:
                 file_record = {
                     "filename": file_name,
@@ -406,7 +410,7 @@ def upload_chunk():
                     "chunks": {},
                     "received_chunks": 0,
                 }
-                pieces[file_index] = file_record
+                pieces[piece_index] = file_record
 
         if file_record["filename"] != file_name:
             return jsonify({"error": "fileName mismatch for this upload target."}), 400
