@@ -17,9 +17,13 @@ let currentJobId = null;
 let progressSocket = null;
 let mosaicReady = false;
 let displayedProgress = 0;
+let displayedGenerationPercent = 0;
 
 function setProgress(percent, text) {
-  const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+  const numericPercent = Number(percent);
+  const clamped = Number.isFinite(numericPercent)
+    ? Math.max(0, Math.min(100, Math.round(numericPercent)))
+    : displayedProgress;
   displayedProgress = Math.max(displayedProgress, clamped);
   progressFill.style.width = `${displayedProgress}%`;
   if (text) {
@@ -118,10 +122,11 @@ async function showGeneratedMosaic(jobId) {
 
 async function processJobStatus(statusPayload, jobId) {
   const progress = Math.max(0, Math.min(100, toSafeNumber(statusPayload.progress, 0)));
+  displayedGenerationPercent = Math.max(displayedGenerationPercent, progress);
   const stage = statusPayload.stage || "Working";
-  const visualProgress = 20 + Math.round(progress * 0.8);
+  const visualProgress = 20 + Math.round(displayedGenerationPercent * 0.8);
 
-  setProgress(visualProgress, `${stage} (${progress}%)`);
+  setProgress(visualProgress, `${stage} (${displayedGenerationPercent}%)`);
 
   if (statusPayload.state === "error") {
     showGenerationError(statusPayload.error || "Generation failed.");
@@ -282,6 +287,7 @@ form.addEventListener("submit", async (event) => {
   closeProgressSocket();
   progressContainer.hidden = false;
   displayedProgress = 0;
+  displayedGenerationPercent = 0;
   setProgress(0, "Preparing upload...");
   statusNode.hidden = true;
   downloadLink.hidden = true;
