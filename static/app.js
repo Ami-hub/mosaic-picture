@@ -14,6 +14,7 @@ let currentObjectUrl = null;
 let currentJobId = null;
 let progressSocket = null;
 let progressEventSource = null;
+let progressEventStreamSettled = false;
 let mosaicReady = false;
 let displayedProgress = 0;
 let displayedGenerationPercent = 0;
@@ -46,6 +47,7 @@ function closeProgressEventSource() {
   if (!progressEventSource) {
     return;
   }
+  progressEventStreamSettled = true;
   progressEventSource.onopen = null;
   progressEventSource.onmessage = null;
   progressEventSource.onerror = null;
@@ -206,6 +208,7 @@ async function connectProgressEventStream(jobId) {
 
   return new Promise((resolve, reject) => {
     let opened = false;
+    progressEventStreamSettled = false;
 
     progressEventSource = new EventSource(eventsUrl);
 
@@ -228,6 +231,9 @@ async function connectProgressEventStream(jobId) {
     };
 
     progressEventSource.onerror = () => {
+      if (progressEventStreamSettled) {
+        return;
+      }
       if (!opened) {
         closeProgressEventSource();
         reject(new Error("Event stream connection failed."));
