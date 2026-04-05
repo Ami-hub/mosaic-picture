@@ -579,7 +579,7 @@ def generate_progress_events(job_id: str):
                     yield ": keepalive\n\n"
                     continue
 
-                yield f"data: {json.dumps(payload)}\\n\\n"
+                yield f"data: {json.dumps(payload)}\n\n"
                 if payload["state"] in {"done", "error"}:
                     return
         finally:
