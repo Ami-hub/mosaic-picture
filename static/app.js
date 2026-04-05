@@ -18,9 +18,6 @@ let mosaicReady = false;
 let displayedProgress = 0;
 let displayedGenerationPercent = 0;
 
-const WEBSOCKET_RETRY_DELAY_MS = 300;
-const WEBSOCKET_MAX_RETRIES = 3;
-
 function setProgress(percent, text) {
   const numericPercent = Number(percent);
   const clamped = Number.isFinite(numericPercent)
@@ -85,12 +82,6 @@ function toSafeNumber(value, fallback = 0) {
     return parsed;
   }
   return fallback;
-}
-
-function wait(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 }
 
 function resetGenerationState() {
@@ -160,13 +151,9 @@ async function processJobStatus(statusPayload, jobId) {
   return true;
 }
 
-async function connectProgressSocket(jobId, attempt = 0) {
+async function connectProgressSocket(jobId) {
   const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
   const wsUrl = `${wsProtocol}://${window.location.host}/api/generate/ws/${encodeURIComponent(jobId)}`;
-
-  if (attempt > 0) {
-    await wait(WEBSOCKET_RETRY_DELAY_MS * attempt);
-  }
 
   return new Promise((resolve, reject) => {
     let opened = false;
@@ -210,13 +197,9 @@ async function connectProgressSocket(jobId, attempt = 0) {
   });
 }
 
-async function connectProgressEventStream(jobId, attempt = 0) {
+async function connectProgressEventStream(jobId) {
   if (typeof EventSource === "undefined") {
     throw new Error("EventSource is not available.");
-  }
-
-  if (attempt > 0) {
-    await wait(WEBSOCKET_RETRY_DELAY_MS * attempt);
   }
 
   const eventsUrl = `/api/generate/events/${encodeURIComponent(jobId)}`;
@@ -393,33 +376,20 @@ form.addEventListener("submit", async (event) => {
     const startPayload = await startChunkedGeneration(uploadId);
     currentJobId = startPayload.jobId;
 
-    let connected = false;
-    for (let attempt = 0; attempt <= WEBSOCKET_MAX_RETRIES && !connected; attempt += 1) {
-      try {
-        await connectProgressSocket(currentJobId, attempt);
-        connected = true;
-      } catch (connectionError) {
-        closeProgressSocket();
-        if (attempt === WEBSOCKET_MAX_RETRIES) {
-          showGenerationError("Live progress updates require WebSocket support.");
-          return;
-        }
-      }
+    try {
+      await connectProgressSocket(currentJobId);
+      return;
+    } catch (connectionError) {
+      closeProgressSocket();
+      setProgress(displayedProgress, "WebSocket unavailable. Switching to stream...");
     }
 
-    if (!connected) {
-      for (let attempt = 0; attempt <= WEBSOCKET_MAX_RETRIES && !connected; attempt += 1) {
-        try {
-          await connectProgressEventStream(currentJobId, attempt);
-          connected = true;
-        } catch (connectionError) {
-          closeProgressEventSource();
-          if (attempt === WEBSOCKET_MAX_RETRIES) {
-            showGenerationError("Could not open a live progress channel.");
-            return;
-          }
-        }
-      }
+    try {
+      await connectProgressEventStream(currentJobId);
+    } catch (connectionError) {
+      closeProgressEventSource();
+      showGenerationError("Could not open a live progress channel.");
+      return;
     }
   } catch (error) {
     closeProgressSocket();
