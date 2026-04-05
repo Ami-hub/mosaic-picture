@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from threading import Lock, Thread
 from uuid import uuid4
 
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, jsonify, render_template, request, send_file, stream_with_context
 from flask_sock import Sock
 from PIL import Image
 from werkzeug.datastructures import FileStorage
@@ -560,6 +560,36 @@ def generate_progress_ws(ws, job_id: str):
                 return
     finally:
         _unregister_job_subscriber(job_id, subscriber_queue)
+
+
+@app.get("/api/generate/events/<job_id>")
+def generate_progress_events(job_id: str):
+    try:
+        subscriber_queue = _register_job_subscriber(job_id)
+    except KeyError:
+        return jsonify({"error": "Job not found."}), 404
+
+    def event_stream():
+        try:
+            while True:
+                try:
+                    payload = subscriber_queue.get(timeout=20)
+                except Empty:
+                    # Keep the stream alive through intermediaries.
+                    yield ": keepalive\n\n"
+                    continue
+
+                yield f"data: {json.dumps(payload)}\\n\\n"
+                if payload["state"] in {"done", "error"}:
+                    return
+        finally:
+            _unregister_job_subscriber(job_id, subscriber_queue)
+
+    return stream_with_context(event_stream()), {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    }
 
 
 @app.get("/api/generate/download/<job_id>")

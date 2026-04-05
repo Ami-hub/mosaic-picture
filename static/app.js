@@ -13,6 +13,7 @@ const CHUNK_SIZE_BYTES = 512 * 1024;
 let currentObjectUrl = null;
 let currentJobId = null;
 let progressSocket = null;
+let progressEventSource = null;
 let mosaicReady = false;
 let displayedProgress = 0;
 let displayedGenerationPercent = 0;
@@ -42,6 +43,17 @@ function closeProgressSocket() {
   progressSocket.onclose = null;
   progressSocket.close();
   progressSocket = null;
+}
+
+function closeProgressEventSource() {
+  if (!progressEventSource) {
+    return;
+  }
+  progressEventSource.onopen = null;
+  progressEventSource.onmessage = null;
+  progressEventSource.onerror = null;
+  progressEventSource.close();
+  progressEventSource = null;
 }
 
 function setStatus(message, kind = "") {
@@ -198,6 +210,55 @@ async function connectProgressSocket(jobId, attempt = 0) {
   });
 }
 
+async function connectProgressEventStream(jobId, attempt = 0) {
+  if (typeof EventSource === "undefined") {
+    throw new Error("EventSource is not available.");
+  }
+
+  if (attempt > 0) {
+    await wait(WEBSOCKET_RETRY_DELAY_MS * attempt);
+  }
+
+  const eventsUrl = `/api/generate/events/${encodeURIComponent(jobId)}`;
+
+  return new Promise((resolve, reject) => {
+    let opened = false;
+
+    progressEventSource = new EventSource(eventsUrl);
+
+    progressEventSource.onopen = () => {
+      opened = true;
+      resolve();
+    };
+
+    progressEventSource.onmessage = async (event) => {
+      try {
+        const statusPayload = JSON.parse(event.data);
+        const finished = await processJobStatus(statusPayload, currentJobId);
+        if (finished) {
+          closeProgressEventSource();
+        }
+      } catch (messageError) {
+        closeProgressEventSource();
+        showGenerationError("Progress stream returned invalid data.");
+      }
+    };
+
+    progressEventSource.onerror = () => {
+      if (!opened) {
+        closeProgressEventSource();
+        reject(new Error("Event stream connection failed."));
+        return;
+      }
+
+      if (currentJobId) {
+        closeProgressEventSource();
+        showGenerationError("Live progress stream disconnected.");
+      }
+    };
+  });
+}
+
 async function createUploadSession() {
   const response = await fetch("/api/upload/session", { method: "POST" });
   if (!response.ok) {
@@ -312,6 +373,7 @@ form.addEventListener("submit", async (event) => {
 
   generateButton.disabled = true;
   closeProgressSocket();
+  closeProgressEventSource();
   progressContainer.hidden = false;
   displayedProgress = 0;
   displayedGenerationPercent = 0;
@@ -344,8 +406,24 @@ form.addEventListener("submit", async (event) => {
         }
       }
     }
+
+    if (!connected) {
+      for (let attempt = 0; attempt <= WEBSOCKET_MAX_RETRIES && !connected; attempt += 1) {
+        try {
+          await connectProgressEventStream(currentJobId, attempt);
+          connected = true;
+        } catch (connectionError) {
+          closeProgressEventSource();
+          if (attempt === WEBSOCKET_MAX_RETRIES) {
+            showGenerationError("Could not open a live progress channel.");
+            return;
+          }
+        }
+      }
+    }
   } catch (error) {
     closeProgressSocket();
+    closeProgressEventSource();
     showGenerationError("Could not reach the server. Try again.");
   }
 });
