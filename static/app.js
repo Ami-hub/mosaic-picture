@@ -9,8 +9,6 @@ const progressFill = document.getElementById("progressFill");
 const progressText = document.getElementById("progressText");
 
 const CHUNK_SIZE_BYTES = 512 * 1024;
-const STATUS_POLL_INTERVAL_MS = 1200;
-const STATUS_POLL_TIMEOUT_MS = 4 * 60 * 1000;
 
 let currentObjectUrl = null;
 let currentJobId = null;
@@ -18,6 +16,9 @@ let progressSocket = null;
 let mosaicReady = false;
 let displayedProgress = 0;
 let displayedGenerationPercent = 0;
+
+const WEBSOCKET_RETRY_DELAY_MS = 300;
+const WEBSOCKET_MAX_RETRIES = 3;
 
 function setProgress(percent, text) {
   const numericPercent = Number(percent);
@@ -72,6 +73,12 @@ function toSafeNumber(value, fallback = 0) {
     return parsed;
   }
   return fallback;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function resetGenerationState() {
@@ -141,34 +148,54 @@ async function processJobStatus(statusPayload, jobId) {
   return true;
 }
 
-function wait(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
+async function connectProgressSocket(jobId, attempt = 0) {
+  const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
+  const wsUrl = `${wsProtocol}://${window.location.host}/api/generate/ws/${encodeURIComponent(jobId)}`;
 
-async function pollJobStatus(jobId) {
-  const startedAt = Date.now();
+  if (attempt > 0) {
+    await wait(WEBSOCKET_RETRY_DELAY_MS * attempt);
+  }
 
-  while (currentJobId === jobId) {
-    if (Date.now() - startedAt > STATUS_POLL_TIMEOUT_MS) {
-      throw new Error("Status polling timed out.");
-    }
+  return new Promise((resolve, reject) => {
+    let opened = false;
 
-    const response = await fetch(`/api/generate/status/${jobId}`);
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({ error: "Status check failed." }));
-      throw new Error(payload.error || "Status check failed.");
-    }
-
-    const statusPayload = await response.json();
-    const finished = await processJobStatus(statusPayload, jobId);
-    if (finished) {
+    try {
+      progressSocket = new WebSocket(wsUrl);
+    } catch (wsConstructionError) {
+      reject(wsConstructionError);
       return;
     }
 
-    await wait(STATUS_POLL_INTERVAL_MS);
-  }
+    progressSocket.onopen = () => {
+      opened = true;
+      resolve();
+    };
+
+    progressSocket.onmessage = async (event) => {
+      try {
+        const statusPayload = JSON.parse(event.data);
+        const finished = await processJobStatus(statusPayload, currentJobId);
+        if (finished) {
+          closeProgressSocket();
+        }
+      } catch (messageError) {
+        closeProgressSocket();
+        reject(messageError);
+      }
+    };
+
+    progressSocket.onerror = () => {
+      if (!opened) {
+        reject(new Error("WebSocket connection failed."));
+      }
+    };
+
+    progressSocket.onclose = () => {
+      if (!opened) {
+        reject(new Error("WebSocket closed before opening."));
+      }
+    };
+  });
 }
 
 async function createUploadSession() {
@@ -304,65 +331,19 @@ form.addEventListener("submit", async (event) => {
     const startPayload = await startChunkedGeneration(uploadId);
     currentJobId = startPayload.jobId;
 
-    const fallbackToPolling = async () => {
-      if (!currentJobId) {
-        return;
-      }
-      closeProgressSocket();
-      setProgress(displayedProgress, "Live updates unavailable. Switching to polling...");
-
+    let connected = false;
+    for (let attempt = 0; attempt <= WEBSOCKET_MAX_RETRIES && !connected; attempt += 1) {
       try {
-        await pollJobStatus(currentJobId);
-      } catch (pollError) {
-        showGenerationError("Could not track generation status. Try again.");
-      }
-    };
-
-    const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const wsUrl = `${wsProtocol}://${window.location.host}/api/generate/ws/${encodeURIComponent(currentJobId)}`;
-    let wsOpened = false;
-    let pollingStarted = false;
-
-    const startPollingOnce = async () => {
-      if (pollingStarted) {
-        return;
-      }
-      pollingStarted = true;
-      await fallbackToPolling();
-    };
-
-    try {
-      progressSocket = new WebSocket(wsUrl);
-    } catch (wsConstructionError) {
-      await startPollingOnce();
-      return;
-    }
-
-    progressSocket.onopen = () => {
-      wsOpened = true;
-    };
-
-    progressSocket.onmessage = async (event) => {
-      try {
-        const statusPayload = JSON.parse(event.data);
-        const finished = await processJobStatus(statusPayload, currentJobId);
-        if (finished) {
-          closeProgressSocket();
+        await connectProgressSocket(currentJobId, attempt);
+        connected = true;
+      } catch (connectionError) {
+        closeProgressSocket();
+        if (attempt === WEBSOCKET_MAX_RETRIES) {
+          showGenerationError("Live progress updates require WebSocket support.");
+          return;
         }
-      } catch (messageError) {
-        await startPollingOnce();
       }
-    };
-
-    progressSocket.onerror = async () => {
-      await startPollingOnce();
-    };
-
-    progressSocket.onclose = async () => {
-      if (!wsOpened && currentJobId) {
-        await startPollingOnce();
-      }
-    };
+    }
   } catch (error) {
     closeProgressSocket();
     showGenerationError("Could not reach the server. Try again.");
