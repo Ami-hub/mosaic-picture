@@ -26,6 +26,11 @@ JOB_SUBSCRIBERS: dict[str, list[Queue]] = {}
 UPLOAD_SESSION_ROOT = Path(gettempdir()) / "mosaic_upload_sessions"
 UPLOAD_SESSION_ROOT.mkdir(parents=True, exist_ok=True)
 
+UPLOAD_SESSION_NOT_FOUND_ERROR = (
+    "Upload session not found. This can happen if your request reached another server instance. "
+    "Please reduce the number of piece images and try again."
+)
+
 register_heif_opener()
 
 def _job_payload(job: dict) -> dict:
@@ -410,7 +415,7 @@ def upload_chunk():
 
     session_dir = _upload_session_dir(upload_id)
     if not session_dir.exists():
-        return jsonify({"error": "Upload session not found."}), 404
+        return jsonify({"error": UPLOAD_SESSION_NOT_FOUND_ERROR}), 404
 
     try:
         file_dir = _upload_file_dir(upload_id, file_role, file_index)
@@ -465,7 +470,7 @@ def start_generate_job_chunked():
     try:
         session_dir = _upload_session_dir(upload_id)
         if not session_dir.exists():
-            return jsonify({"error": "Upload session not found."}), 404
+            return jsonify({"error": UPLOAD_SESSION_NOT_FOUND_ERROR}), 404
 
         target_dir = session_dir / "target"
         if not target_dir.exists():

@@ -285,7 +285,13 @@ async function uploadFileInChunks(uploadId, file, fileRole, fileIndex, onChunkUp
 
     if (!response.ok) {
       const payload = await response.json().catch(() => ({ error: `Failed uploading ${file.name}.` }));
-      throw new Error(payload.error || `Failed uploading ${file.name}.`);
+      const serverError = payload.error || `Failed uploading ${file.name}.`;
+      if (response.status === 404 && /upload session not found/i.test(serverError)) {
+        throw new Error(
+          "Upload session expired or moved to another server. Please reduce the number of piece images and try again."
+        );
+      }
+      throw new Error(serverError);
     }
 
     onChunkUploaded(chunkBlob.size);
@@ -403,6 +409,7 @@ form.addEventListener("submit", async (event) => {
   } catch (error) {
     closeProgressSocket();
     closeProgressEventSource();
-    showGenerationError("Could not reach the server. Try again.");
+    const message = error instanceof Error ? error.message : "Could not reach the server. Try again.";
+    showGenerationError(message);
   }
 });
