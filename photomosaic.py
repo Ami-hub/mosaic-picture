@@ -268,6 +268,64 @@ def run_mosaic_builder(
     print(f"Output is in {out_file}")
 
 
+def compose_mosaic_image_single_process(
+    target_images: Tuple[RGBImage, RGBImage],
+    piece_images: Tuple[List[RGBImage], List[RGBImage]],
+    out_file: str,
+    config: MosaicConfig,
+    progress_callback: ProgressCallback | None = None,
+):
+    """Build mosaic without multiprocessing for constrained runtimes."""
+    print("Building the mosaic (single-process mode)...")
+    target_img_large, target_img_small = target_images
+    pieces_large, pieces_small = piece_images
+    image, x_block_count, y_block_count = build_canvas_and_grid(target_img_large.size, target_img_large.mode, config)
+    piece_blocks_small = [piece.tobytes() for piece in pieces_small]
+    total_blocks = x_block_count * y_block_count
+    completed_blocks = 0
+    progress_step = max(total_blocks // 120, 1)
+    match_cache: dict[bytes, int | None] = {}
+
+    for idx, (x, y) in enumerate(((x, y) for x in range(x_block_count) for y in range(y_block_count)), start=1):
+        output_bounds = (
+            x * config["block_size_px"],
+            y * config["block_size_px"],
+            (x + 1) * config["block_size_px"],
+            (y + 1) * config["block_size_px"],
+        )
+        sample_bounds = (
+            x * config["match_block_size_px"],
+            y * config["match_block_size_px"],
+            (x + 1) * config["match_block_size_px"],
+            (y + 1) * config["match_block_size_px"],
+        )
+        target_block = target_img_small.crop(sample_bounds).tobytes()
+
+        best_fit_piece_index = match_cache.get(target_block)
+        if best_fit_piece_index is None and target_block not in match_cache:
+            best_fit_piece_index = pick_best_piece_index_bytes(target_block, piece_blocks_small)
+            match_cache[target_block] = best_fit_piece_index
+
+        if best_fit_piece_index is not None:
+            piece_image = pieces_large[best_fit_piece_index]
+            paste_piece_into_canvas(image, piece_image, output_bounds)
+
+        completed_blocks += 1
+        if progress_callback and (idx % progress_step == 0 or idx == total_blocks):
+            percentage = 25 + int((completed_blocks / max(total_blocks, 1)) * 70)
+            progress_callback("Matching tiles", min(95, percentage))
+
+    if progress_callback:
+        progress_callback("Blending final image", 97)
+    image = Image.blend(image, target_img_large, config["overlay_alpha"])
+    if progress_callback:
+        progress_callback("Saving output", 99)
+    image.save(out_file)
+    if progress_callback:
+        progress_callback("Done", 100)
+    print(f"Output is in {out_file}")
+
+
 def compose_mosaic_image(
     target_images: Tuple[RGBImage, RGBImage],
     piece_images: Tuple[List[RGBImage], List[RGBImage]],
@@ -276,15 +334,19 @@ def compose_mosaic_image(
     progress_callback: ProgressCallback | None = None,
 ):
     """Orchestrate worker processes that match pieces and build mosaic output."""
+    if config["worker_count"] <= 1:
+        compose_mosaic_image_single_process(target_images, piece_images, out_file, config, progress_callback)
+        return
+
     print("Building the mosaic...")
     target_img_large, target_img_small = target_images
     pieces_large, pieces_small = piece_images
     _, x_block_count, y_block_count = build_canvas_and_grid(target_img_large.size, target_img_large.mode, config)
     piece_blocks_small = [piece.tobytes() for piece in pieces_small]
-    work_queue = Queue(config["worker_count"])
-    result_queue = Queue()
     worker_processes: List[Process] = []
     try:
+        work_queue = Queue(config["worker_count"])
+        result_queue = Queue()
         if progress_callback:
             progress_callback("Starting workers", 16)
         total_blocks = x_block_count * y_block_count
