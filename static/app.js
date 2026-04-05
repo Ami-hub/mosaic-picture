@@ -220,6 +220,9 @@ async function connectProgressEventStream(jobId) {
     progressEventSource.onmessage = async (event) => {
       try {
         const statusPayload = JSON.parse(event.data);
+        if (statusPayload.state === "done" || statusPayload.state === "error") {
+          progressEventStreamSettled = true;
+        }
         const finished = await processJobStatus(statusPayload, currentJobId);
         if (finished) {
           closeProgressEventSource();
